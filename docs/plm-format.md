@@ -8,6 +8,11 @@ be accepted for inference. Quantization relationships and future decoder
 architectures remain unspecified. Do not produce or distribute model files
 based on this draft.
 
+`check_sections` composes the current checks against one authenticated byte
+buffer and trusted schemas, and verifies metadata and vocabulary counts agree.
+Its result is explicitly an incomplete marker; it does not authorize use of
+weights or establish quantization correctness. No complete BGE schema exists.
+
 All integers are unsigned little-endian. A consumer obtains an expected SHA-256
 from a trusted pin and hashes the exact immutable byte buffer it will inspect.
 A match establishes only byte identity, not model validity. This draft requires

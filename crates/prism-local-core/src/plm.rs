@@ -8,8 +8,41 @@ const SECTIONS: usize = 5;
 
 /// An authenticated but otherwise untrusted, structurally checked envelope.
 /// Its sections have not been validated and must not be used for inference.
-#[derive(Debug, PartialEq, Eq)]
-pub struct StructuralEnvelope;
+#[derive(PartialEq, Eq)]
+pub struct StructuralEnvelope<'a> {
+    bytes: &'a [u8],
+    ranges: [(usize, usize); SECTIONS],
+}
+
+impl std::fmt::Debug for StructuralEnvelope<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StructuralEnvelope { section contents redacted }")
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum Section {
+    Metadata,
+    TensorDirectory,
+    Vocabulary,
+    Provenance,
+    TensorData,
+}
+
+impl<'a> StructuralEnvelope<'a> {
+    /// Returns untrusted section bytes from the exact buffer that was hashed.
+    pub fn section(&self, section: Section) -> &'a [u8] {
+        let index = match section {
+            Section::Metadata => 0,
+            Section::TensorDirectory => 1,
+            Section::Vocabulary => 2,
+            Section::Provenance => 3,
+            Section::TensorData => 4,
+        };
+        let (start, end) = self.ranges[index];
+        &self.bytes[start..end]
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -20,15 +53,18 @@ pub enum Error {
 /// Verify the trusted digest and check container structure using the same bytes.
 ///
 /// Success is not model validation: all section content remains untrusted.
-pub fn check_envelope(bytes: &[u8], expected: &[u8; 32]) -> Result<StructuralEnvelope, Error> {
+pub fn check_envelope<'a>(
+    bytes: &'a [u8],
+    expected: &[u8; 32],
+) -> Result<StructuralEnvelope<'a>, Error> {
     if sha256::digest(bytes).as_ref() != Some(expected) {
         return Err(Error::DigestMismatch);
     }
-    validate(bytes).ok_or(Error::InvalidEnvelope)?;
-    Ok(StructuralEnvelope)
+    let ranges = validate(bytes).ok_or(Error::InvalidEnvelope)?;
+    Ok(StructuralEnvelope { bytes, ranges })
 }
 
-fn validate(bytes: &[u8]) -> Option<()> {
+fn validate(bytes: &[u8]) -> Option<[(usize, usize); SECTIONS]> {
     let header = bytes.get(..HEADER_LEN)?;
     if header.get(..4)? != b"PLM1"
         || read_u16(header, 4)? != 1
@@ -73,7 +109,7 @@ fn validate(bytes: &[u8]) -> Option<()> {
             return None;
         }
     }
-    Some(())
+    Some(ranges)
 }
 
 fn overlaps(a: (usize, usize), b: (usize, usize)) -> bool {
@@ -100,7 +136,7 @@ fn read_u64(bytes: &[u8], pos: usize) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_envelope, sha256, Error, StructuralEnvelope};
+    use super::{check_envelope, sha256, Error, Section, StructuralEnvelope};
 
     fn put16(b: &mut [u8], pos: usize, n: u16) {
         b[pos..pos + 2].copy_from_slice(&n.to_le_bytes());
@@ -127,7 +163,7 @@ mod tests {
         }
         b
     }
-    fn check(b: &[u8]) -> Result<StructuralEnvelope, Error> {
+    fn check(b: &[u8]) -> Result<StructuralEnvelope<'_>, Error> {
         check_envelope(b, &sha256::digest(b).unwrap())
     }
 
@@ -135,10 +171,24 @@ mod tests {
     fn accepts_only_well_formed_envelope_and_authenticates_first() {
         let mut b = valid();
         let digest = sha256::digest(&b).unwrap();
-        assert_eq!(check_envelope(&b, &digest), Ok(StructuralEnvelope));
+        assert!(check_envelope(&b, &digest).is_ok());
         b[256] ^= 1;
         assert_eq!(check_envelope(&b, &digest), Err(Error::DigestMismatch));
-        assert_eq!(check(&b), Ok(StructuralEnvelope)); // content is not yet checked
+        assert!(check(&b).is_ok()); // content is not yet checked
+    }
+
+    #[test]
+    fn exposes_only_checked_ranges_and_redacts_debug_output() {
+        let mut b = valid();
+        b[256] = b'A';
+        b[320] = b'B';
+        let envelope = check(&b).unwrap();
+        assert_eq!(envelope.section(Section::Metadata), b"A");
+        assert_eq!(envelope.section(Section::TensorDirectory), b"B");
+        assert_eq!(
+            format!("{envelope:?}"),
+            "StructuralEnvelope { section contents redacted }"
+        );
     }
 
     #[test]
