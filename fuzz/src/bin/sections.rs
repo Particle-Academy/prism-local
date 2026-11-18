@@ -1,6 +1,7 @@
 use prism_local_core::{
+    memory_plan::{checked_plan, RequestBuffers},
     metadata::BertSpec,
-    model_checks::{check_sections_with_scratch, TrustedSections},
+    model_checks::{check_sections_budgeted, scratch_requirements, TrustedSections},
     provenance::{LicenseKind, ProvenanceSpec, Source},
     sha256,
     tensors::{Dtype, TensorSpec, ValueRule},
@@ -60,7 +61,9 @@ fn main() -> std::io::Result<()> {
     };
     if let Some(bytes) = prism_local_fuzz::input()? {
         if let Some(digest) = sha256::digest(&bytes) {
-            let _ = check_sections_with_scratch(&bytes, &digest, &spec, &mut [0; 2], &mut [0; 5]);
+            let required = scratch_requirements(&spec).expect("trusted fuzz schema");
+            let plan = checked_plan(2, bytes.len() as u64, &required).expect("bounded fuzz input");
+            let _ = check_sections_budgeted(&bytes, &digest, &spec, &mut RequestBuffers::new(plan));
         }
     }
     Ok(())

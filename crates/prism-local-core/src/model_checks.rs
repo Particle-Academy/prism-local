@@ -1,6 +1,9 @@
 //! Compose draft section checks without declaring a model loadable.
 
-use crate::{metadata, plm, provenance, tensors, vocab};
+use crate::{
+    memory_plan::{Allocation, RequestBuffers},
+    metadata, plm, provenance, tensors, vocab,
+};
 
 pub struct TrustedSections<'a> {
     pub metadata: metadata::BertSpec,
@@ -19,6 +22,7 @@ pub enum Error {
     Tensors,
     Vocabulary,
     Provenance,
+    Resource,
 }
 
 /// This marker explicitly is not authorization to load or use the model.
@@ -52,6 +56,49 @@ pub fn check_sections_with_scratch(
         digest,
         spec,
         Some((tensor_scratch, vocabulary_scratch)),
+    )
+}
+
+/// Conservative scratch payload requirements for this trusted schema. The
+/// caller must also include the exact input and all other live allocations.
+pub fn scratch_requirements(spec: &TrustedSections<'_>) -> Result<[Allocation; 2], Error> {
+    let tensors = tensors::scratch_elements(spec.tensors).map_err(|_| Error::InconsistentSchema)?;
+    let vocabulary =
+        vocab::scratch_elements(spec.vocabulary).map_err(|_| Error::InconsistentSchema)?;
+    Ok([
+        Allocation {
+            count: u64::try_from(tensors).map_err(|_| Error::InconsistentSchema)?,
+            element_bytes: 8,
+        },
+        Allocation {
+            count: u64::try_from(vocabulary).map_err(|_| Error::InconsistentSchema)?,
+            element_bytes: 8,
+        },
+    ])
+}
+
+/// Execute the incomplete checks with scratch charged to a caller-owned plan.
+/// This does not charge `bytes`, allocator overhead or any other live memory,
+/// and does not authorize a model load.
+pub fn check_sections_budgeted(
+    bytes: &[u8],
+    digest: &[u8; 32],
+    spec: &TrustedSections<'_>,
+    buffers: &mut RequestBuffers,
+) -> Result<IncompleteChecks, Error> {
+    let requirements = scratch_requirements(spec)?;
+    let mut tensor_scratch = buffers
+        .allocate::<u64>(requirements[0].count)
+        .map_err(|_| Error::Resource)?;
+    let mut vocabulary_scratch = buffers
+        .allocate::<u64>(requirements[1].count)
+        .map_err(|_| Error::Resource)?;
+    check_sections_with_scratch(
+        bytes,
+        digest,
+        spec,
+        tensor_scratch.as_mut_slice(),
+        vocabulary_scratch.as_mut_slice(),
     )
 }
 
@@ -100,9 +147,11 @@ fn check_sections_inner(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_sections, check_sections_with_scratch, Error, IncompleteChecks, TrustedSections,
+        check_sections, check_sections_budgeted, check_sections_with_scratch, scratch_requirements,
+        Error, IncompleteChecks, TrustedSections,
     };
     use crate::{
+        memory_plan::{checked_plan, Allocation, RequestBuffers},
         metadata::BertSpec,
         plm,
         provenance::{LicenseKind, ProvenanceSpec, Source},
@@ -266,6 +315,29 @@ mod tests {
             check_sections_with_scratch(&b, &digest, &spec, &mut tensor_scratch[..1], &mut scratch),
             Err(Error::Tensors)
         );
+        let requirements = scratch_requirements(&spec).unwrap();
+        let plan = checked_plan(1, b.len() as u64, &requirements).unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        assert_eq!(
+            check_sections_budgeted(&b, &digest, &spec, &mut buffers),
+            Ok(IncompleteChecks)
+        );
+        assert_eq!(buffers.remaining_bytes(), 0);
+        let plan = checked_plan(
+            1,
+            b.len() as u64,
+            &[Allocation {
+                count: 55,
+                element_bytes: 1,
+            }],
+        )
+        .unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        assert_eq!(
+            check_sections_budgeted(&b, &digest, &spec, &mut buffers),
+            Err(Error::Resource)
+        );
+        assert_eq!(buffers.remaining_bytes(), 39);
         let row_tensors = [
             TensorSpec {
                 id: 1,

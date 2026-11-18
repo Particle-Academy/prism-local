@@ -104,7 +104,10 @@ The tensor and vocabulary checkers also offer caller-owned scratch paths: two
 u64s per trusted tensor and one u64 per trusted vocabulary entry, holding
 validated input ranges for overlap, padding and uniqueness checks. The composed
 draft checks expose both paths. The caller must plan and charge the scratch and
-immutable input separately; this is not a complete model-memory cap.
+immutable input separately. They also expose scratch requirements and a path
+that charges both scratch buffers to a caller-supplied checked plan. Neither
+path charges the input or allocator/runtime overhead; this is not a complete
+model-memory cap or authorization to load a model.
 
 ## Draft provenance section
 
