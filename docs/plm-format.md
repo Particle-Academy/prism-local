@@ -70,7 +70,8 @@ dimensions and dtypes must exactly equal the trusted schema. Offsets are
 length; the range must fit the data section and not overlap any other tensor.
 The checker accepts at most 1,024 tensors and rejects duplicates or omissions.
 
-The separate payload checker requires a trusted per-tensor rule: any i8,
+The separate payload checker requires data-section bytes outside tensor ranges
+to be zero padding. It also requires a trusted per-tensor rule: any i8,
 finite normal-or-zero f16/f32, or strictly positive normal f16/f32. It reads
 little-endian float bits directly and refuses infinities, NaNs and subnormals;
 the positive rule also refuses signed zero and negative values. A dtype and

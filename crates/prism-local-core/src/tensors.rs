@@ -192,6 +192,10 @@ pub fn check_values(
         u64::try_from(data.len()).map_err(|_| InvalidDirectory)?,
         specs,
     )?;
+    let mut ranges = Vec::new();
+    ranges
+        .try_reserve_exact(specs.len())
+        .map_err(|_| InvalidDirectory)?;
     for ((record, spec), rule) in directory
         .as_chunks::<ENTRY>()
         .0
@@ -206,6 +210,7 @@ pub fn check_values(
             .checked_add(usize::try_from(length).map_err(|_| InvalidDirectory)?)
             .ok_or(InvalidDirectory)?;
         let payload = data.get(start..end).ok_or(InvalidDirectory)?;
+        ranges.push((start, end));
         let valid = match (spec.dtype, rule) {
             (Dtype::I8, ValueRule::AnyI8) => true,
             (Dtype::F16, ValueRule::FiniteNormalOrZero) => payload
@@ -233,6 +238,27 @@ pub fn check_values(
         if !valid {
             return Err(InvalidDirectory);
         }
+    }
+    ranges.sort_unstable();
+    let mut next = 0;
+    for (start, end) in ranges {
+        if data
+            .get(next..start)
+            .ok_or(InvalidDirectory)?
+            .iter()
+            .any(|&byte| byte != 0)
+        {
+            return Err(InvalidDirectory);
+        }
+        next = end;
+    }
+    if data
+        .get(next..)
+        .ok_or(InvalidDirectory)?
+        .iter()
+        .any(|&byte| byte != 0)
+    {
+        return Err(InvalidDirectory);
     }
     Ok(())
 }
@@ -419,6 +445,32 @@ mod tests {
         }
         let scales = [ValueRule::AnyI8, ValueRule::PositiveNormal];
         assert_eq!(check_values(&directory, &data, &schema(), &scales), Ok(()));
+        let mut nonzero_padding = data.clone();
+        nonzero_padding[8] = 1;
+        assert_eq!(
+            check_values(&directory, &nonzero_padding, &schema(), &scales),
+            Err(InvalidDirectory)
+        );
+        let mut nonzero_trailer = data.clone();
+        nonzero_trailer.push(1);
+        assert_eq!(
+            check_values(&directory, &nonzero_trailer, &schema(), &scales),
+            Err(InvalidDirectory)
+        );
+        let mut shifted_directory = directory.clone();
+        shifted_directory[24..32].copy_from_slice(&64_u64.to_le_bytes());
+        shifted_directory[64..72].copy_from_slice(&128_u64.to_le_bytes());
+        let mut shifted_data = vec![0; 64];
+        shifted_data.extend_from_slice(&data);
+        assert_eq!(
+            check_values(&shifted_directory, &shifted_data, &schema(), &scales),
+            Ok(())
+        );
+        shifted_data[0] = 1;
+        assert_eq!(
+            check_values(&shifted_directory, &shifted_data, &schema(), &scales),
+            Err(InvalidDirectory)
+        );
         for bits in [
             0_u32,
             (-0.0_f32).to_bits(),

@@ -156,6 +156,11 @@ mod tests {
         assert!(
             model_checks::check_sections(bytes, &sha256::digest(bytes).unwrap(), &row_spec).is_ok()
         );
+        let bytes = include_bytes!("../corpus/quantized_sections/nonzero-padding");
+        assert!(
+            model_checks::check_sections(bytes, &sha256::digest(bytes).unwrap(), &row_spec)
+                .is_err()
+        );
     }
 
     #[test]
