@@ -52,3 +52,18 @@ The checker accepts at most 1,024 tensors and rejects duplicates or omissions.
 
 This draft does not define the BGE tensor schema, quantization scale layout,
 or payload validation. A directory passing these checks is not a loadable model.
+
+## Draft WordPiece vocabulary section
+
+A 32-byte header contains u32 vocabulary count, u32 normalization flags,
+five u32 special-token IDs in the trusted schema's order, and one zero u32.
+Each vocabulary entry then contains a little-endian u16 byte length and that
+many UTF-8 bytes. The section ends immediately after the final token. A trusted
+architecture schema supplies the exact expected count, flags, special IDs and
+special spellings. IDs must be in range and distinct; each special spelling
+must match its entry. All tokens must be nonempty, unique valid UTF-8 of at
+most 1,024 bytes. The section is limited to 16 MiB and 131,072 entries.
+
+The checker does not implement or validate the behavior of normalization or
+WordPiece tokenization, and no BGE vocabulary schema is registered yet. A
+passing vocabulary section does not make a model valid or loadable.

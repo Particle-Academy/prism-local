@@ -9,3 +9,4 @@ pub mod math;
 pub mod plm;
 pub mod sha256;
 pub mod tensors;
+pub mod vocab;
