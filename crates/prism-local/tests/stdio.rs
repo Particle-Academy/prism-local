@@ -38,6 +38,53 @@ fn sidecar_answers_framed_requests_and_exits_on_shutdown() {
 }
 
 #[test]
+fn frame_limit_accepts_boundary_and_refuses_an_oversized_header() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_prism-local"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut frame = br#"{"jsonrpc":"2.0","id":1,"method":"hello"}"#.to_vec();
+    frame.resize(HARD_MAX_FRAME, b' ');
+    write_frame(&mut input, &frame, HARD_MAX_FRAME).unwrap();
+    input.flush().unwrap();
+    drop(input);
+    let mut output = child.stdout.take().unwrap();
+    let reply = read_frame(&mut output, HARD_MAX_FRAME).unwrap().unwrap();
+    assert!(std::str::from_utf8(&reply)
+        .unwrap()
+        .contains("\"inferenceAvailable\":false"));
+    assert!(child.wait().unwrap().success());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_prism-local"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(&((HARD_MAX_FRAME + 1) as u32).to_be_bytes())
+        .unwrap();
+    input.flush().unwrap();
+    let limit = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        if Instant::now() >= limit {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("oversized frame body was awaited");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
 fn deadline_kills_stalled_partial_frame_but_does_not_expire_while_idle() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_prism-local"))
         .stdin(Stdio::piped())

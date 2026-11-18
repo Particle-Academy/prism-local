@@ -2,9 +2,9 @@
 
 `maxMemoryMb` is currently rejected. The pieces in the core library are not an
 enforced sidecar budget: they plan caller-declared payloads, provide optional
-fixed-capacity numeric buffers and provide frame-length admission and a
-preplanned frame-buffer reader. No runtime path accounts for every live
-allocation yet.
+fixed-capacity numeric buffers and provide frame-length admission. The sidecar
+uses a preplanned frame buffer capped at 1 MiB, but no runtime path accounts
+for every live allocation yet.
 
 Before accepting a memory setting, the engine needs one documented accounting
 boundary and an audit covering at least resident model bytes, incoming frame,

@@ -34,10 +34,10 @@ that charge their actual vector capacity against a consumed plan. This does
 not account for allocator overhead, transient allocation, stacks or unlisted
 allocations; separate allocators have no shared limit. It is not connected to
 the sidecar or evidence that a request or process cap exists.
-The frame reader also exposes an admission callback after validating the
-declared length and before allocating the body, plus a variant that reads into
-a preplanned fixed byte buffer. The current sidecar has not connected either
-to a complete request memory budget.
+The sidecar reads each frame into a preplanned fixed byte buffer and refuses it
+if that buffer's capacity exceeds 1 MiB. The reader also exposes an admission
+callback after validating the declared length and before allocation. Neither
+is a complete request memory budget.
 See [request memory budgeting](request-memory-budget.md) for the remaining
 accounting and validation work.
 
