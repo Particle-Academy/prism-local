@@ -42,6 +42,9 @@ jobs:
         run: cargo test --workspace --release --locked --offline
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+      - name: Compare relocated release builds
+        shell: pwsh
+        run: ./tools/check-repro.ps1
       - name: Produce debug fixture bytes
         run: cargo run --locked --offline -p prism-local-core --bin foundation-golden -- foundation-debug.bin
       - name: Produce release fixture bytes
