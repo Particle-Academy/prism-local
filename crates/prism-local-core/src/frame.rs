@@ -4,6 +4,7 @@
 //! bytes. EOF is clean only before the first header byte. Any malformed or
 //! truncated frame requires the caller to close the stream, not resynchronise.
 
+use crate::memory_plan::{Buffer, RequestBuffers};
 use std::io::{self, Read, Write};
 
 pub const HARD_MAX_FRAME: usize = 1_048_576;
@@ -32,6 +33,44 @@ pub fn read_frame_checked<R: Read>(
     on_start: impl FnOnce() -> io::Result<()>,
     on_size: impl FnOnce(usize) -> io::Result<()>,
 ) -> io::Result<Option<Vec<u8>>> {
+    let Some(size) = read_size(reader, max, on_start)? else {
+        return Ok(None);
+    };
+    on_size(size)?;
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(size)
+        .map_err(|_| io::Error::other("frame allocation failed"))?;
+    payload.resize(size, 0);
+    reader.read_exact(&mut payload)?;
+    Ok(Some(payload))
+}
+
+/// Read a frame into a fixed buffer charged to a precomputed payload plan.
+/// This does not budget JSON parsing, responses, stacks or other allocations.
+/// On refusal or I/O failure, the stream must be closed rather than reused.
+pub fn read_frame_budgeted<R: Read>(
+    reader: &mut R,
+    max: usize,
+    on_start: impl FnOnce() -> io::Result<()>,
+    buffers: &mut RequestBuffers,
+) -> io::Result<Option<Buffer<u8>>> {
+    let Some(size) = read_size(reader, max, on_start)? else {
+        return Ok(None);
+    };
+    let size = u64::try_from(size).map_err(|_| io::Error::other("frame length unsupported"))?;
+    let mut payload = buffers
+        .allocate::<u8>(size)
+        .map_err(|_| io::Error::other("frame allocation or budget unavailable"))?;
+    reader.read_exact(payload.as_mut_slice())?;
+    Ok(Some(payload))
+}
+
+fn read_size<R: Read>(
+    reader: &mut R,
+    max: usize,
+    on_start: impl FnOnce() -> io::Result<()>,
+) -> io::Result<Option<usize>> {
     check_limit(max)?;
     let mut header = [0_u8; 4];
     loop {
@@ -52,14 +91,7 @@ pub fn read_frame_checked<R: Read>(
             "frame length out of bounds",
         ));
     }
-    on_size(size)?;
-    let mut payload = Vec::new();
-    payload
-        .try_reserve_exact(size)
-        .map_err(|_| io::Error::other("frame allocation failed"))?;
-    payload.resize(size, 0);
-    reader.read_exact(&mut payload)?;
-    Ok(Some(payload))
+    Ok(Some(size))
 }
 
 /// Write a complete frame. An I/O error leaves the stream unusable.
@@ -89,7 +121,11 @@ fn check_limit(max: usize) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_frame, read_frame_checked, read_frame_started, write_frame, HARD_MAX_FRAME};
+    use super::{
+        read_frame, read_frame_budgeted, read_frame_checked, read_frame_started, write_frame,
+        HARD_MAX_FRAME,
+    };
+    use crate::memory_plan::{checked_plan, Allocation, RequestBuffers};
     use std::io::{self, Cursor};
 
     #[test]
@@ -181,5 +217,29 @@ mod tests {
             |_| panic!("invalid size must not be admitted")
         )
         .is_err());
+    }
+
+    #[test]
+    fn budgeted_frame_is_charged_and_oversized_body_is_not_read() {
+        let plan = checked_plan(
+            1,
+            0,
+            &[Allocation {
+                count: 1024,
+                element_bytes: 1,
+            }],
+        )
+        .unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        let mut denied = &b"\0\0\x04\x01x"[..];
+        assert!(read_frame_budgeted(&mut denied, 2048, || Ok(()), &mut buffers).is_err());
+        assert_eq!(denied, &b"x"[..]);
+        assert_eq!(buffers.remaining_bytes(), 1024);
+        let mut accepted = &b"\0\0\0\x03abc"[..];
+        let payload = read_frame_budgeted(&mut accepted, 2048, || Ok(()), &mut buffers)
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload.as_slice(), b"abc");
+        assert!(buffers.remaining_bytes() <= 1021);
     }
 }
