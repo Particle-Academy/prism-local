@@ -34,6 +34,11 @@ that charge their actual vector capacity against a consumed plan. This does
 not account for allocator overhead, transient allocation, stacks or unlisted
 allocations; separate allocators have no shared limit. It is not connected to
 the sidecar or evidence that a request or process cap exists.
+The frame reader also exposes an admission callback after validating the
+declared length and before allocating the body. The current sidecar has not
+connected it to a complete request memory budget.
+See [request memory budgeting](request-memory-budget.md) for the remaining
+accounting and validation work.
 
 CI checks for direct `std::net` references in engine source. This lexical
 check does not prove the absence of all network access: aliases, other platform

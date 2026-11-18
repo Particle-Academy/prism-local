@@ -20,6 +20,18 @@ pub fn read_frame_started<R: Read>(
     max: usize,
     on_start: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<Option<Vec<u8>>> {
+    read_frame_checked(reader, max, on_start, |_| Ok(()))
+}
+
+/// As `read_frame_started`, with an admission check after reading and
+/// validating the length but before allocating or reading the frame body.
+/// The caller is responsible for accounting for all other request allocations.
+pub fn read_frame_checked<R: Read>(
+    reader: &mut R,
+    max: usize,
+    on_start: impl FnOnce() -> io::Result<()>,
+    on_size: impl FnOnce(usize) -> io::Result<()>,
+) -> io::Result<Option<Vec<u8>>> {
     check_limit(max)?;
     let mut header = [0_u8; 4];
     loop {
@@ -40,6 +52,7 @@ pub fn read_frame_started<R: Read>(
             "frame length out of bounds",
         ));
     }
+    on_size(size)?;
     let mut payload = Vec::new();
     payload
         .try_reserve_exact(size)
@@ -76,7 +89,7 @@ fn check_limit(max: usize) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_frame, read_frame_started, write_frame, HARD_MAX_FRAME};
+    use super::{read_frame, read_frame_checked, read_frame_started, write_frame, HARD_MAX_FRAME};
     use std::io::{self, Cursor};
 
     #[test]
@@ -142,5 +155,31 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Other);
         assert_eq!(input, &b"\0\0\x01x"[..]);
+    }
+
+    #[test]
+    fn admission_refusal_happens_before_body_allocation_or_read() {
+        let mut input = &b"\0\0\0\x03abc"[..];
+        let mut observed = None;
+        let result = read_frame_checked(
+            &mut input,
+            16,
+            || Ok(()),
+            |size| {
+                observed = Some(size);
+                Err(io::Error::other("not admitted"))
+            },
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+        assert_eq!(observed, Some(3));
+        assert_eq!(input, &b"abc"[..]);
+        let mut oversized = &b"\0\0\0\x11"[..];
+        assert!(read_frame_checked(
+            &mut oversized,
+            16,
+            || Ok(()),
+            |_| panic!("invalid size must not be admitted")
+        )
+        .is_err());
     }
 }
