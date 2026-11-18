@@ -33,6 +33,14 @@ mod tests {
     fn synthetic_corpus_reaches_valid_parser_paths() {
         let json = include_bytes!("../corpus/json/valid");
         assert!(json::parse(json).is_ok());
+        let input = include_bytes!("../corpus/json_write/valid");
+        let value = std::str::from_utf8(input).unwrap();
+        let length = json::string_output_len(value).unwrap();
+        let mut output = vec![0; length];
+        assert_eq!(json::write_string(value, &mut output), Ok(length));
+        assert!(
+            matches!(json::parse(&output), Ok(json::Value::String(decoded)) if decoded == value)
+        );
         let frame = include_bytes!("../corpus/frame/valid");
         assert_eq!(
             frame::read_frame(&mut frame.as_slice(), frame::HARD_MAX_FRAME)

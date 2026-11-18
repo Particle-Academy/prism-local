@@ -1,8 +1,7 @@
 //! Sequential JSON-RPC skeleton. No model, worker pool or inference exists yet.
 
-use prism_local_core::json::{parse, Value};
+use prism_local_core::json::{parse, string_output_len, write_string, Value};
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::time::Duration;
 
 const DEFAULT_DEADLINE_MS: usize = 30_000;
@@ -137,24 +136,16 @@ fn error(id: &str, code: i32, message: &str) -> Vec<u8> {
     .into_bytes()
 }
 fn quote(s: &str) -> String {
-    let mut out = String::from("\"");
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{0}'..='\u{1f}' => {
-                write!(&mut out, "\\u{:04x}", ch as u32).unwrap();
-            }
-            _ => out.push(ch),
-        }
-    }
-    out.push('"');
-    out
+    let length = string_output_len(s).expect("bounded JSON string");
+    let mut out = vec![0; length];
+    write_string(s, &mut out).expect("exact JSON string buffer");
+    String::from_utf8(out).expect("JSON string is valid UTF-8")
 }
 
 #[cfg(test)]
 mod tests {
     use super::Server;
+    use prism_local_core::json::{parse, Value};
     fn text(b: Option<Vec<u8>>) -> String {
         String::from_utf8(b.unwrap()).unwrap()
     }
@@ -167,6 +158,11 @@ mod tests {
         assert!(text(reply).contains("\"inferenceAvailable\":false"));
         let (reply, _) = s.handle(br#"{"jsonrpc":"2.0","id":"x\"y","method":"stats"}"#);
         assert!(text(reply).contains("\"id\":\"x\\\"y\""));
+        let (reply, _) = s.handle(br#"{"jsonrpc":"2.0","id":"\u0000\n\\\"","method":"stats"}"#);
+        let Value::Object(mut reply) = parse(&reply.unwrap()).unwrap() else {
+            panic!("response object")
+        };
+        assert_eq!(reply.remove("id"), Some(Value::String("\0\n\\\"".into())));
         let (reply, stop) = s.handle(br#"{"jsonrpc":"2.0","method":"shutdown"}"#);
         assert!(reply.is_none());
         assert!(stop);

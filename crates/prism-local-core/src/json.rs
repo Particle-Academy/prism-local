@@ -19,6 +19,57 @@ pub enum Value {
 #[derive(Debug, PartialEq, Eq)]
 pub struct InvalidJson;
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct OutputTooSmall;
+
+/// Count bytes for a quoted JSON string, including escapes, without allocating.
+pub fn string_output_len(value: &str) -> Option<usize> {
+    value.chars().try_fold(2_usize, |len, ch| {
+        let bytes = match ch {
+            '"' | '\\' => 2,
+            '\u{0}'..='\u{1f}' => 6,
+            _ => ch.len_utf8(),
+        };
+        len.checked_add(bytes)
+    })
+}
+
+/// Write a quoted JSON string into fixed storage. Insufficient storage is
+/// rejected before writing any bytes; this function never grows the buffer.
+pub fn write_string(value: &str, output: &mut [u8]) -> Result<usize, OutputTooSmall> {
+    let length = string_output_len(value).ok_or(OutputTooSmall)?;
+    if output.len() < length {
+        return Err(OutputTooSmall);
+    }
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    output[0] = b'"';
+    let mut pos = 1;
+    for ch in value.chars() {
+        match ch {
+            '"' | '\\' => {
+                output[pos] = b'\\';
+                output[pos + 1] = ch as u8;
+                pos += 2;
+            }
+            '\u{0}'..='\u{1f}' => {
+                let byte = ch as u8;
+                output[pos..pos + 4].copy_from_slice(b"\\u00");
+                output[pos + 4] = HEX[usize::from(byte >> 4)];
+                output[pos + 5] = HEX[usize::from(byte & 15)];
+                pos += 6;
+            }
+            _ => {
+                let mut encoded = [0; 4];
+                let bytes = ch.encode_utf8(&mut encoded).as_bytes();
+                output[pos..pos + bytes.len()].copy_from_slice(bytes);
+                pos += bytes.len();
+            }
+        }
+    }
+    output[pos] = b'"';
+    Ok(length)
+}
+
 pub fn parse(input: &[u8]) -> Result<Value, InvalidJson> {
     if input.len() > crate::frame::HARD_MAX_FRAME {
         return Err(InvalidJson);
@@ -244,7 +295,7 @@ impl Parser<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, Value};
+    use super::{parse, string_output_len, write_string, OutputTooSmall, Value};
 
     #[test]
     fn accepts_json_values_and_decodes_surrogate_pair() {
@@ -257,6 +308,33 @@ mod tests {
                 Value::String("😀".into())
             ])
         );
+    }
+
+    #[test]
+    fn fixed_string_output_roundtrips_and_refuses_short_buffers_without_writing() {
+        let controls: String = (0..=31)
+            .map(|value| char::from_u32(value).unwrap())
+            .collect();
+        for value in [
+            "",
+            "plain",
+            "quote\"slash\\",
+            "\u{0}\n\u{1f}",
+            "café 😀",
+            controls.as_str(),
+        ] {
+            let needed = string_output_len(value).unwrap();
+            let mut output = vec![0; needed];
+            assert_eq!(write_string(value, &mut output), Ok(needed));
+            assert_eq!(parse(&output), Ok(Value::String(value.to_owned())));
+            let mut short = vec![b'x'; needed - 1];
+            assert_eq!(write_string(value, &mut short), Err(OutputTooSmall));
+            assert!(short.iter().all(|&byte| byte == b'x'));
+        }
+        let value = "\"\\\u{0}\n\u{1f}";
+        let mut output = vec![0; string_output_len(value).unwrap()];
+        write_string(value, &mut output).unwrap();
+        assert_eq!(&output, br#""\"\\\u0000\u000a\u001f""#);
     }
     #[test]
     fn rejects_ambiguous_and_invalid_inputs() {

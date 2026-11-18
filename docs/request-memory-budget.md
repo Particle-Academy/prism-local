@@ -30,6 +30,10 @@ all compute paths, error responses and cancellation need the same accounting;
 a successfully allocated output buffer alone is insufficient. The parent must
 still enforce any desired OS process limit and deadline independently.
 
+JSON string escaping can calculate its exact output length and write into fixed
+storage without growth. The current sidecar still allocates response strings
+outside a request plan, so this writer does not establish response accounting.
+
 Before enabling `maxMemoryMb`, test exact-limit and one-byte-over cases,
 overflow and allocation failures, large and malicious JSON, concurrent or
 repeated calls, worker/thread overhead, error paths, cancellation and model
