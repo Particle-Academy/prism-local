@@ -42,7 +42,17 @@ fn main() -> io::Result<()> {
         let Some(frame) = frame else { break };
         let expires = active_deadline.ok_or_else(|| io::Error::other("deadline was not armed"))?;
         refuse_expired(expires);
-        let (response, stop) = server.handle(frame.as_slice());
+        let arena_plan = checked_plan(
+            2,
+            0,
+            &[Allocation {
+                count: 2 * 1024 * 1024,
+                element_bytes: 1,
+            }],
+        )
+        .map_err(|_| io::Error::other("invalid JSON arena budget"))?;
+        let mut arena_buffers = RequestBuffers::new(arena_plan);
+        let (response, stop) = server.handle_budgeted(frame.as_slice(), &mut arena_buffers);
         refuse_expired(expires);
         if let Some(response) = response {
             write_frame(&mut output, &response, HARD_MAX_FRAME)?;

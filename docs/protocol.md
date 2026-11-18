@@ -33,11 +33,13 @@ The core contains checked allocation planning and fixed-size numeric buffers
 that charge their actual vector capacity against a consumed plan. This does
 not account for allocator overhead, transient allocation, stacks or unlisted
 allocations; separate allocators have no shared limit. It is not connected to
-the sidecar or evidence that a request or process cap exists.
+all sidecar allocations or evidence that a request or process cap exists.
 The sidecar reads each frame into a preplanned fixed byte buffer and refuses it
-if that buffer's capacity exceeds 1 MiB. The reader also exposes an admission
-callback after validating the declared length and before allocation. Neither
-is a complete request memory budget.
+if that buffer's capacity exceeds 1 MiB. It parses JSON into a separate arena
+whose node and decoded-text buffer capacities together are capped at 2 MiB.
+The reader also exposes an admission callback after validating the declared
+length and before allocation. These fixed limits are not a complete request
+memory budget: responses, allocator overhead and stacks are not included.
 See [request memory budgeting](request-memory-budget.md) for the remaining
 accounting and validation work.
 

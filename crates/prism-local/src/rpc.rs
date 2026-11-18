@@ -1,7 +1,10 @@
 //! Sequential JSON-RPC skeleton. No model, worker pool or inference exists yet.
 
-use prism_local_core::json::{parse, string_output_len, write_string, Value};
-use std::collections::BTreeMap;
+use prism_local_core::{
+    json::{string_output_len, write_string},
+    json_arena::{self, Arena, Kind},
+    memory_plan::RequestBuffers,
+};
 use std::time::Duration;
 
 const DEFAULT_DEADLINE_MS: usize = 30_000;
@@ -21,6 +24,21 @@ impl Server {
         Self::default()
     }
 
+    #[cfg(test)]
+    fn handle(&mut self, frame: &[u8]) -> (Option<Vec<u8>>, bool) {
+        let plan = prism_local_core::memory_plan::checked_plan(
+            2,
+            0,
+            &[prism_local_core::memory_plan::Allocation {
+                count: 2 * 1024 * 1024,
+                element_bytes: 1,
+            }],
+        )
+        .unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        self.handle_budgeted(frame, &mut buffers)
+    }
+
     pub fn timeout(&self) -> Duration {
         let millis = self
             .settings
@@ -29,43 +47,75 @@ impl Server {
         Duration::from_millis(millis as u64)
     }
 
-    pub fn handle(&mut self, frame: &[u8]) -> (Option<Vec<u8>>, bool) {
-        let value = match parse(frame) {
+    pub fn handle_budgeted(
+        &mut self,
+        frame: &[u8],
+        buffers: &mut RequestBuffers,
+    ) -> (Option<Vec<u8>>, bool) {
+        let arena = match json_arena::parse(frame, buffers) {
             Ok(value) => value,
-            Err(_) => return (Some(error("null", -32700, "Parse error")), false),
+            Err(json_arena::Error::Invalid) => {
+                return (Some(error("null", -32700, "Parse error")), false)
+            }
+            Err(json_arena::Error::Resource) => {
+                return (
+                    Some(error("null", -32001, "Request memory unavailable")),
+                    false,
+                )
+            }
         };
-        let Value::Object(mut object) = value else {
-            return (Some(error("null", -32600, "Invalid Request")), false);
-        };
-        let id = match object.remove("id") {
-            None => None,
-            Some(Value::Null) => Some("null".to_owned()),
-            Some(Value::String(s)) => Some(quote(&s)),
-            Some(Value::Number(n)) if valid_id_number(&n) => Some(n),
-            Some(_) => return (Some(error("null", -32600, "Invalid Request")), false),
-        };
-        if object.remove("jsonrpc") != Some(Value::String("2.0".into())) {
+        let root = arena.root();
+        if arena.kind(root) != Some(Kind::Object) {
             return (Some(error("null", -32600, "Invalid Request")), false);
         }
-        let method = match object.remove("method") {
-            Some(Value::String(s)) => s,
+        let id = match arena.get(root, "id") {
+            None => None,
+            Some(index) => match arena.kind(index) {
+                Some(Kind::Null) => Some("null".to_owned()),
+                Some(Kind::String) => match arena.string(index) {
+                    Some(value) => Some(quote(value)),
+                    None => return (Some(error("null", -32600, "Invalid Request")), false),
+                },
+                Some(Kind::Number) => match arena.number(index) {
+                    Some(value) if valid_id_number(value) => Some(value.to_owned()),
+                    _ => return (Some(error("null", -32600, "Invalid Request")), false),
+                },
+                _ => return (Some(error("null", -32600, "Invalid Request")), false),
+            },
+        };
+        if arena
+            .get(root, "jsonrpc")
+            .and_then(|index| arena.string(index))
+            != Some("2.0")
+        {
+            return (Some(error("null", -32600, "Invalid Request")), false);
+        }
+        let method = match arena
+            .get(root, "method")
+            .and_then(|index| arena.string(index))
+        {
+            Some(value) => value,
             _ => return (Some(error("null", -32600, "Invalid Request")), false),
         };
-        let params = match object.remove("params") {
-            None => BTreeMap::new(),
-            Some(Value::Object(p)) => p,
-            _ => return (id.map(|id| error(&id, -32602, "Invalid params")), false),
+        let params = match arena.get(root, "params") {
+            None => None,
+            Some(index) if arena.kind(index) == Some(Kind::Object) => Some(index),
+            Some(_) => return (id.map(|id| error(&id, -32602, "Invalid params")), false),
         };
-        let (result, stop) = match method.as_str() {
-            "hello" => match self.hello(params) {
+        let (result, stop) = match method {
+            "hello" => match self.hello(&arena, params) {
                 Some(s) => (Ok(s), false),
                 None => (Err((-32602, "Invalid params")), false),
             },
-            "stats" if params.is_empty() => match &self.settings {
-                Some(s) => (Ok(settings_result(s)), false),
-                None => (Err((-32000, "Call hello first")), false),
-            },
-            "shutdown" if params.is_empty() => (Ok("null".into()), true),
+            "stats" if params.is_none_or(|index| arena.first_child(index).is_none()) => {
+                match &self.settings {
+                    Some(s) => (Ok(settings_result(s)), false),
+                    None => (Err((-32000, "Call hello first")), false),
+                }
+            }
+            "shutdown" if params.is_none_or(|index| arena.first_child(index).is_none()) => {
+                (Ok("null".into()), true)
+            }
             "stats" | "shutdown" => (Err((-32602, "Invalid params")), false),
             _ => (Err((-32601, "Method not found")), false),
         };
@@ -78,14 +128,21 @@ impl Server {
         (response, stop)
     }
 
-    fn hello(&mut self, mut params: BTreeMap<String, Value>) -> Option<String> {
+    fn hello(&mut self, arena: &Arena<'_>, params: Option<usize>) -> Option<String> {
         if self.settings.is_some() {
             return None;
         }
         let cores = std::thread::available_parallelism().map_or(1, usize::from);
-        let threads = option_positive(&mut params, "threads", 1)?;
-        let deadline_ms = option_positive(&mut params, "deadlineMs", DEFAULT_DEADLINE_MS)?;
-        if !params.is_empty() || threads > cores || !(100..=300_000).contains(&deadline_ms) {
+        let threads = option_positive(arena, params, "threads", 1)?;
+        let deadline_ms = option_positive(arena, params, "deadlineMs", DEFAULT_DEADLINE_MS)?;
+        let mut child = params.and_then(|index| arena.first_child(index));
+        while let Some(index) = child {
+            if !matches!(arena.key(index), Some("threads" | "deadlineMs")) {
+                return None;
+            }
+            child = arena.next_sibling(index);
+        }
+        if threads > cores || !(100..=300_000).contains(&deadline_ms) {
             return None;
         }
         let settings = Settings {
@@ -99,14 +156,16 @@ impl Server {
 }
 
 fn option_positive(
-    params: &mut BTreeMap<String, Value>,
+    arena: &Arena<'_>,
+    params: Option<usize>,
     key: &str,
     default: usize,
 ) -> Option<usize> {
-    match params.remove(key) {
+    match params.and_then(|index| arena.get(index, key)) {
         None => Some(default),
-        Some(Value::Number(n)) => usize::try_from(integer(&n)?).ok().filter(|&v| v > 0),
-        _ => None,
+        Some(index) => usize::try_from(integer(arena.number(index)?)?)
+            .ok()
+            .filter(|&v| v > 0),
     }
 }
 fn integer(s: &str) -> Option<u64> {
@@ -146,6 +205,7 @@ fn quote(s: &str) -> String {
 mod tests {
     use super::Server;
     use prism_local_core::json::{parse, Value};
+    use prism_local_core::memory_plan::{checked_plan, RequestBuffers};
     fn text(b: Option<Vec<u8>>) -> String {
         String::from_utf8(b.unwrap()).unwrap()
     }
@@ -192,5 +252,19 @@ mod tests {
         assert!(
             text(s.handle(br#"{"jsonrpc":"2.0","id":1,"method":"embed"}"#).0).contains("-32601")
         );
+    }
+
+    #[test]
+    fn arena_refusal_does_not_apply_settings() {
+        let mut server = Server::new();
+        let plan = checked_plan(1, 0, &[]).unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        let request = br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"threads":1}}"#;
+        let (reply, stop) = server.handle_budgeted(request, &mut buffers);
+        assert!(!stop);
+        assert!(text(reply).contains("-32001"));
+        let (reply, stop) = server.handle(request);
+        assert!(!stop);
+        assert!(text(reply).contains("\"inferenceAvailable\":false"));
     }
 }
