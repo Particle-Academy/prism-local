@@ -163,4 +163,31 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn converter_source_corpus_has_success_and_failure_seeds() {
+        use prism_local_convert::safetensors::{inspect, Dtype, TensorSpec};
+        let specs = [
+            TensorSpec {
+                name: "position",
+                dtype: Dtype::I64,
+                shape: &[2],
+            },
+            TensorSpec {
+                name: "weight",
+                dtype: Dtype::F32,
+                shape: &[2],
+            },
+        ];
+        let valid = include_bytes!("../corpus/safetensors/valid");
+        assert!(inspect(valid, &sha256::digest(valid).unwrap(), &specs, Some("pt")).is_ok());
+        let invalid = include_bytes!("../corpus/safetensors/overflowing-header");
+        assert!(inspect(
+            invalid,
+            &sha256::digest(invalid).unwrap(),
+            &specs,
+            Some("pt")
+        )
+        .is_err());
+    }
 }

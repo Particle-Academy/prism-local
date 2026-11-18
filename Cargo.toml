@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/prism-local-core", "crates/prism-local", "fuzz"]
+members = ["crates/prism-local-core", "crates/prism-local", "crates/prism-local-convert", "fuzz"]
 resolver = "2"
 
 [workspace.package]

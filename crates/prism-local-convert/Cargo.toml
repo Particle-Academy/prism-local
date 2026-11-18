@@ -1,0 +1,8 @@
+[package]
+name = "prism-local-convert"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+prism-local-core = { path = "../prism-local-core" }

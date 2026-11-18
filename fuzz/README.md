@@ -1,6 +1,6 @@
 # Fuzz entry points
 
-The `plm`, `frame`, `json`, `metadata`, `tensors`, `vocab`, `provenance` and `sections` binaries read one input from stdin and exercise the
+The `plm`, `frame`, `json`, `metadata`, `tensors`, `vocab`, `provenance`, `sections` and `safetensors` binaries read one input from stdin and exercise the
 respective bounded parsers. PLM computes a matching digest so a mutator can
 reach the structural checks. Inputs over 1 MiB are ignored by the adapters;
 this is a fuzz-driver limit, not a model-file size limit. Build with
@@ -20,6 +20,7 @@ as regression cases after review.
 
 The current targets exercise framing, JSON, the draft PLM container, tensor
 directory, metadata, vocabulary, provenance and composed section checks with small trusted test schemas. Additional
+source safetensors inspection uses a separate converter-only target. Additional
 section content, tokenization and schema-compiler targets must be added when
 those parsers exist.
 Malformed findings must become regression cases.

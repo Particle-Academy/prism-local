@@ -10,6 +10,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-local-convert"
+version = "0.0.0"
+dependencies = [
+ "prism-local-core",
+]
+
+[[package]]
 name = "prism-local-core"
 version = "0.0.0"
 
@@ -17,5 +24,6 @@ version = "0.0.0"
 name = "prism-local-fuzz"
 version = "0.0.0"
 dependencies = [
+ "prism-local-convert",
  "prism-local-core",
 ]

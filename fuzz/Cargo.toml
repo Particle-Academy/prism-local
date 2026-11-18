@@ -7,3 +7,4 @@ publish = false
 
 [dependencies]
 prism-local-core = { path = "../crates/prism-local-core" }
+prism-local-convert = { path = "../crates/prism-local-convert" }

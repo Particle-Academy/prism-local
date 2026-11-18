@@ -1,8 +1,8 @@
 # Offline conversion and reference outputs (design)
 
-Status: design only. The converter, reference generator, and model loader do
-not exist yet. This document describes the required evidence, not a claim of
-reproducibility.
+Status: design and partial source-inspection foundations. A complete converter,
+reference generator and model loader do not exist yet. This document describes
+the required evidence, not a claim of reproducibility.
 
 The engine and converter are Rust programs built without third-party crates.
 The engine has no network code. Upstream source retrieval and reference
@@ -64,6 +64,16 @@ The pinned pooling configuration requests CLS-token pooling; the converter
 must explicitly define and validate how the position-ID and pooler tensors
 are handled, based on reference behavior. These observations are not a complete
 tensor schema, quantization recipe, converter or inference validation.
+
+The separate converter library can inspect an immutable, already-buffered
+safetensors input after comparing its SHA-256 with a trusted digest. It checks
+F32/I64 tensor names, shapes, ranges and exact metadata against a trusted schema;
+its returned slices refer to those same authenticated bytes. A local check
+accepted all 200 BGE entries against an independently written expected source
+inventory. The library does not verify tensor values, license evidence or model
+semantics, read files, produce PLM files, or authorize conversion. Callers must
+enforce a size limit before buffering; future large-file handling needs a
+separate same-bytes review. The sidecar does not depend on this library.
 
 Evidence: [pinned model card](https://huggingface.co/BAAI/bge-small-en-v1.5/blob/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/README.md),
 [pinned source weights](https://huggingface.co/BAAI/bge-small-en-v1.5/blob/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/model.safetensors),
