@@ -24,7 +24,7 @@ mod tests {
         plm,
         provenance::{self, ProvenanceSpec, Source},
         sha256,
-        tensors::{self, Dtype, TensorSpec, ValueRule},
+        tensors::{self, Dtype, RowScale, TensorSpec, ValueRule},
         vocab::{self, VocabSpec},
     };
 
@@ -121,12 +121,40 @@ mod tests {
             metadata: small_meta,
             tensors: &tensor,
             tensor_values: &rules,
+            row_scales: &[],
             vocabulary: &vocab,
             provenance: &provenance,
         };
         let bytes = include_bytes!("../corpus/sections/valid");
         assert!(
             model_checks::check_sections(bytes, &sha256::digest(bytes).unwrap(), &spec).is_ok()
+        );
+        let row_specs = [
+            TensorSpec {
+                id: 1,
+                dtype: Dtype::I8,
+                dims: [2, 4, 0, 0],
+            },
+            TensorSpec {
+                id: 2,
+                dtype: Dtype::F32,
+                dims: [2, 0, 0, 0],
+            },
+        ];
+        let row_rules = [ValueRule::AnyI8, ValueRule::PositiveNormal];
+        let scales = [RowScale {
+            weight_id: 1,
+            scale_id: 2,
+        }];
+        let row_spec = TrustedSections {
+            tensors: &row_specs,
+            tensor_values: &row_rules,
+            row_scales: &scales,
+            ..spec
+        };
+        let bytes = include_bytes!("../corpus/quantized_sections/valid");
+        assert!(
+            model_checks::check_sections(bytes, &sha256::digest(bytes).unwrap(), &row_spec).is_ok()
         );
     }
 

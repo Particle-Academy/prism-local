@@ -31,6 +31,7 @@ impl Dtype {
 }
 
 /// Supplied by trusted engine code, never constructed from model metadata.
+#[derive(Clone, Copy)]
 pub struct TensorSpec {
     pub id: u32,
     pub dtype: Dtype,
@@ -42,11 +43,72 @@ pub struct TensorSpec {
 pub struct InvalidDirectory;
 
 /// A trusted rule for the corresponding tensor's payload.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueRule {
     AnyI8,
     FiniteNormalOrZero,
     PositiveNormal,
+}
+
+/// A trusted schema relation between one i8 matrix and its per-row scales.
+#[derive(Clone, Copy)]
+pub struct RowScale {
+    pub weight_id: u32,
+    pub scale_id: u32,
+}
+
+/// Validate declared per-row scale relationships in a trusted schema.
+/// Every declared pair must name distinct, unreused tensors: an i8 matrix and
+/// a positive-normal f16/f32 scale vector with one element per matrix row.
+/// This checks only declared pairs, not quantization accuracy or completeness.
+pub fn check_row_scales(
+    specs: &[TensorSpec],
+    rules: &[ValueRule],
+    pairs: &[RowScale],
+) -> Result<(), InvalidDirectory> {
+    if specs.len() > MAX_TENSORS
+        || specs.len() != rules.len()
+        || pairs.len() > specs.len()
+        || specs.windows(2).any(|pair| pair[0].id >= pair[1].id)
+    {
+        return Err(InvalidDirectory);
+    }
+    for (index, pair) in pairs.iter().enumerate() {
+        if pair.weight_id == pair.scale_id
+            || pairs[..index].iter().any(|other| {
+                other.weight_id == pair.weight_id
+                    || other.scale_id == pair.scale_id
+                    || other.weight_id == pair.scale_id
+                    || other.scale_id == pair.weight_id
+            })
+        {
+            return Err(InvalidDirectory);
+        }
+        let weight = specs
+            .iter()
+            .position(|spec| spec.id == pair.weight_id)
+            .ok_or(InvalidDirectory)?;
+        let scale = specs
+            .iter()
+            .position(|spec| spec.id == pair.scale_id)
+            .ok_or(InvalidDirectory)?;
+        let weight_spec = &specs[weight];
+        let scale_spec = &specs[scale];
+        let [rows, columns, third, fourth] = weight_spec.dims;
+        if weight_spec.dtype != Dtype::I8
+            || rules[weight] != ValueRule::AnyI8
+            || rows == 0
+            || columns == 0
+            || third != 0
+            || fourth != 0
+            || !matches!(scale_spec.dtype, Dtype::F16 | Dtype::F32)
+            || rules[scale] != ValueRule::PositiveNormal
+            || scale_spec.dims != [rows, 0, 0, 0]
+        {
+            return Err(InvalidDirectory);
+        }
+    }
+    Ok(())
 }
 
 /// Check exact IDs, types, shapes, lengths, alignment and non-overlap.
@@ -187,7 +249,10 @@ fn valid_float(bits: u32, mantissa_bits: u32, exponent_bits: u32, positive: bool
 
 #[cfg(test)]
 mod tests {
-    use super::{check, check_values, Dtype, InvalidDirectory, TensorSpec, ValueRule};
+    use super::{
+        check, check_row_scales, check_values, Dtype, InvalidDirectory, RowScale, TensorSpec,
+        ValueRule,
+    };
 
     fn entry(id: u32, dtype: u8, rank: u8, dims: [u32; 4], offset: u64, len: u64) -> Vec<u8> {
         let mut b = vec![0; 40];
@@ -278,6 +343,62 @@ mod tests {
         }];
         assert_eq!(
             check(&entry(1, 3, 4, dims, 0, 1), u64::MAX, &schema),
+            Err(InvalidDirectory)
+        );
+    }
+
+    #[test]
+    fn checks_declared_per_row_scale_schema_relationships() {
+        let mut specs = [
+            TensorSpec {
+                id: 1,
+                dtype: Dtype::I8,
+                dims: [2, 4, 0, 0],
+            },
+            TensorSpec {
+                id: 2,
+                dtype: Dtype::F32,
+                dims: [2, 0, 0, 0],
+            },
+        ];
+        let rules = [ValueRule::AnyI8, ValueRule::PositiveNormal];
+        let pair = RowScale {
+            weight_id: 1,
+            scale_id: 2,
+        };
+        assert_eq!(check_row_scales(&specs, &rules, &[pair]), Ok(()));
+        specs[1].dims[0] = 3;
+        assert_eq!(
+            check_row_scales(&specs, &rules, &[pair]),
+            Err(InvalidDirectory)
+        );
+        specs[1].dims[0] = 2;
+        assert_eq!(
+            check_row_scales(
+                &specs,
+                &[ValueRule::AnyI8, ValueRule::FiniteNormalOrZero],
+                &[pair]
+            ),
+            Err(InvalidDirectory)
+        );
+        assert_eq!(
+            check_row_scales(&specs, &rules, &[pair, pair]),
+            Err(InvalidDirectory)
+        );
+        assert_eq!(
+            check_row_scales(
+                &specs,
+                &rules,
+                &[RowScale {
+                    weight_id: 1,
+                    scale_id: 3
+                }]
+            ),
+            Err(InvalidDirectory)
+        );
+        specs.swap(0, 1);
+        assert_eq!(
+            check_row_scales(&specs, &rules, &[pair]),
             Err(InvalidDirectory)
         );
     }

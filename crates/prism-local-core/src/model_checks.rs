@@ -6,6 +6,7 @@ pub struct TrustedSections<'a> {
     pub metadata: metadata::BertSpec,
     pub tensors: &'a [tensors::TensorSpec],
     pub tensor_values: &'a [tensors::ValueRule],
+    pub row_scales: &'a [tensors::RowScale],
     pub vocabulary: &'a vocab::VocabSpec<'a>,
     pub provenance: &'a provenance::ProvenanceSpec<'a>,
 }
@@ -25,8 +26,9 @@ pub enum Error {
 pub struct IncompleteChecks;
 
 /// Hash once, then check known sections from that exact immutable buffer.
-/// Quantization relationships and complete architecture semantics remain
-/// unvalidated; no inference path may accept this result as a valid model.
+/// Only declared scale relationships are checked; complete quantization and
+/// architecture semantics remain unvalidated. No inference path may accept
+/// this result as a valid model.
 pub fn check_sections(
     bytes: &[u8],
     digest: &[u8; 32],
@@ -34,6 +36,7 @@ pub fn check_sections(
 ) -> Result<IncompleteChecks, Error> {
     if spec.metadata.vocab != spec.vocabulary.count
         || spec.tensors.len() != spec.tensor_values.len()
+        || tensors::check_row_scales(spec.tensors, spec.tensor_values, spec.row_scales).is_err()
     {
         return Err(Error::InconsistentSchema);
     }
@@ -62,7 +65,7 @@ mod tests {
         plm,
         provenance::{ProvenanceSpec, Source},
         sha256,
-        tensors::{Dtype, TensorSpec, ValueRule},
+        tensors::{Dtype, RowScale, TensorSpec, ValueRule},
         vocab::VocabSpec,
     };
 
@@ -189,6 +192,7 @@ mod tests {
             metadata: meta,
             tensors: &tensor,
             tensor_values: &rules,
+            row_scales: &[],
             vocabulary: &vocab,
             provenance: &provenance_spec,
         };
@@ -202,6 +206,58 @@ mod tests {
         let b = envelope(&parts);
         let digest = sha256::digest(&b).unwrap();
         assert_eq!(check_sections(&b, &digest, &spec), Ok(IncompleteChecks));
+        let row_tensors = [
+            TensorSpec {
+                id: 1,
+                dtype: Dtype::I8,
+                dims: [2, 4, 0, 0],
+            },
+            TensorSpec {
+                id: 2,
+                dtype: Dtype::F32,
+                dims: [2, 0, 0, 0],
+            },
+        ];
+        let row_rules = [ValueRule::AnyI8, ValueRule::PositiveNormal];
+        let row_scales = [RowScale {
+            weight_id: 1,
+            scale_id: 2,
+        }];
+        let row_spec = TrustedSections {
+            tensors: &row_tensors,
+            tensor_values: &row_rules,
+            row_scales: &row_scales,
+            ..spec
+        };
+        let mut row_parts = parts.clone();
+        let mut directory = vec![0_u8; 80];
+        directory[0..4].copy_from_slice(&1_u32.to_le_bytes());
+        directory[4] = 1;
+        directory[5] = 2;
+        directory[8..12].copy_from_slice(&2_u32.to_le_bytes());
+        directory[12..16].copy_from_slice(&4_u32.to_le_bytes());
+        directory[32..40].copy_from_slice(&8_u64.to_le_bytes());
+        directory[40..44].copy_from_slice(&2_u32.to_le_bytes());
+        directory[44] = 3;
+        directory[45] = 1;
+        directory[48..52].copy_from_slice(&2_u32.to_le_bytes());
+        directory[64..72].copy_from_slice(&64_u64.to_le_bytes());
+        directory[72..80].copy_from_slice(&8_u64.to_le_bytes());
+        row_parts[1] = directory;
+        row_parts[4] = vec![0; 72];
+        row_parts[4][64..68].copy_from_slice(&1_f32.to_bits().to_le_bytes());
+        row_parts[4][68..72].copy_from_slice(&2_f32.to_bits().to_le_bytes());
+        let row_bytes = envelope(&row_parts);
+        assert_eq!(
+            check_sections(&row_bytes, &sha256::digest(&row_bytes).unwrap(), &row_spec),
+            Ok(IncompleteChecks)
+        );
+        row_parts[4][64..68].copy_from_slice(&(-1_f32).to_bits().to_le_bytes());
+        let bad_rows = envelope(&row_parts);
+        assert_eq!(
+            check_sections(&bad_rows, &sha256::digest(&bad_rows).unwrap(), &row_spec),
+            Err(Error::Tensors)
+        );
         let mut altered = b.clone();
         let last = altered.len() - 1;
         altered[last] ^= 1;

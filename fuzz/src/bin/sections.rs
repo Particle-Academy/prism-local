@@ -52,6 +52,7 @@ fn main() -> std::io::Result<()> {
         metadata: meta,
         tensors: &tensor,
         tensor_values: &rules,
+        row_scales: &[],
         vocabulary: &vocabulary,
         provenance: &provenance,
     };

@@ -4,12 +4,13 @@ Status: **incomplete and not an interoperable model format**. The current
 parser checks an authenticated container envelope, with separate draft checks
 for BERT metadata, tensor directories, WordPiece vocabulary and provenance.
 These are not yet integrated into a complete BGE validator, and no model can
-be accepted for inference. Quantization relationships and future decoder
+be accepted for inference. Complete quantization rules and future decoder
 architectures remain unspecified. Do not produce or distribute model files
 based on this draft.
 
 `check_sections` composes the current checks against one authenticated byte
 buffer and trusted schemas, and verifies metadata and vocabulary counts agree.
+It also verifies declared per-row scale relationships in the trusted schema.
 Its result is explicitly an incomplete marker; it does not authorize use of
 weights or establish quantization correctness. No complete BGE schema exists.
 
@@ -73,9 +74,14 @@ finite normal-or-zero f16/f32, or strictly positive normal f16/f32. It reads
 little-endian float bits directly and refuses infinities, NaNs and subnormals;
 the positive rule also refuses signed zero and negative values. A dtype and
 rule mismatch is refused. These checks do not establish scale relationships or
-quantization correctness.
+quantization correctness. An optional trusted per-row relation connects an i8
+rank-2 matrix to a positive-normal f16/f32 rank-1 scale vector whose length
+equals the number of rows. Related tensors cannot be reused by another pair.
+Only declared pairs are checked: a future complete architecture schema must
+establish which tensors require scales, define their encoding and quantization
+algorithm, and validate all remaining relationships.
 
-This draft does not define the BGE tensor schema or quantization scale layout.
+This draft does not define the complete BGE tensor schema or scale layout.
 A directory or payload passing these checks is not a loadable model.
 
 ## Draft WordPiece vocabulary section
