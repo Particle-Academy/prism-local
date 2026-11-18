@@ -41,6 +41,37 @@ inputs, plus signed zero and the smallest normal inputs, between its Windows
 and Linux debug and release builds. This does not establish identical
 results for every CPU, ISA, thread count, floating-point environment or input.
 
+## Exact operation-bit fixture
+
+`math-exact-bits.txt` records the exact expected output bits for the same 1,264
+inputs, followed by three rows for negative minimum normal, negative zero and
+positive minimum normal. A separate reference implemented the documented
+scalar operations using Python arbitrary-precision rational numbers and
+explicit IEEE-754 binary32 round-to-nearest, ties-to-even at each operation,
+including a single rounding for fused multiply-add. It used round-to-nearest,
+ties away from zero for the integer reduction step. The reference implements
+the same polynomial and branching recipe; it checks the bits of that recipe,
+not whether the recipe is a correctly rounded transcendental function.
+
+Two runs in a disposable Python 3.13.15 virtual environment, isolated mode and
+no third-party packages, produced 1,267 LF-terminated rows with SHA-256
+`ef6e1f75b26f4da1a3cef7562c8599426df8972258bf9b72d54873c7db3107f`.
+The uncommitted reference script has SHA-256
+`94563e0a1bf41e6eee29b0d1e28cadd42963559d876c0a52670736f27b62f4e8`;
+the input CSV's SHA-256 is recorded above. The venv executable SHA-256 is
+`72b29481593c5da37c99248c82777fbfb56217ea7809b771bc760d0a9ecb179b` and
+`python313.dll` is
+`e820bf024efd2b56bb2b82791e6b6ddc7303f070f8e72cba7637482a8a906238`.
+The standard-library `fractions.py`, `csv.py` and `struct.py` SHA-256s are,
+respectively, `e11c8bd6dd626a8dc40e265c6968598633e9095e76c2782353d8c05d71eb5ec6`,
+`e493e0ce8551f499012ece6805a7e4ea65984ece6fbe5a66dc525120847fa61c` and
+`eadbcc540c3b6496e52449e712eca3694e31e1d935af0f1e26cff0e3cc370945`.
+The venv shares its base installation's standard library and Windows runtime:
+it was isolated, not a fully hermetic image. The two runs used the same local
+environment, not independently prepared machines. The fixture is checked by
+workspace tests on CI's Windows, GNU Linux and musl builds; it is not proof of
+cross-ISA inference identity or a replacement for the quality measurements.
+
 The foundation fixture also computes six small integer row dots with one worker
 and with up to six workers, capped by the runner's available parallelism. Each
 row is accumulated in a single fixed sequence; worker results are compared and

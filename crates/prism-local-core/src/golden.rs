@@ -60,4 +60,18 @@ mod tests {
             b"dot=16257\nsha256=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\nrow=29194\nrow=0\nrow=-32304\nrow=141\nrow=-141\nrow=-106\n"
         ));
     }
+
+    #[test]
+    fn scalar_output_bits_match_exact_arithmetic_reference() {
+        let output = String::from_utf8(super::bytes()).unwrap();
+        let actual: Vec<_> = output.lines().skip(8).collect();
+        let expected: Vec<_> = include_str!("../tests/fixtures/math-exact-bits.txt")
+            .lines()
+            .collect();
+        assert_eq!(actual.len(), 1_267);
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(*actual, expected, "reference row {}", index + 1);
+        }
+    }
 }
