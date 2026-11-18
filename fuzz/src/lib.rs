@@ -19,6 +19,7 @@ pub fn input() -> io::Result<Option<Vec<u8>>> {
 mod tests {
     use prism_local_core::{
         frame, json,
+        memory_plan::{checked_plan, Allocation, RequestBuffers},
         metadata::{self, BertSpec},
         model_checks::{self, TrustedSections},
         plm,
@@ -39,6 +40,44 @@ mod tests {
                 .unwrap(),
             json
         );
+        let bytes = include_bytes!("../corpus/frame_budgeted/valid");
+        let (prefix, mut wire) = bytes.split_at(2);
+        let budget = u64::from(u16::from_le_bytes([prefix[0], prefix[1]]));
+        let plan = checked_plan(
+            1,
+            0,
+            &[Allocation {
+                count: budget,
+                element_bytes: 1,
+            }],
+        )
+        .unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        let frame =
+            frame::read_frame_budgeted(&mut wire, frame::HARD_MAX_FRAME, || Ok(()), &mut buffers)
+                .unwrap()
+                .unwrap();
+        assert_eq!(frame.as_slice(), json);
+        let denied = include_bytes!("../corpus/frame_budgeted/denied");
+        let (prefix, mut wire) = denied.split_at(2);
+        let budget = u64::from(u16::from_le_bytes([prefix[0], prefix[1]]));
+        let plan = checked_plan(
+            1,
+            0,
+            &[Allocation {
+                count: budget,
+                element_bytes: 1,
+            }],
+        )
+        .unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        assert!(frame::read_frame_budgeted(
+            &mut wire,
+            frame::HARD_MAX_FRAME,
+            || Ok(()),
+            &mut buffers
+        )
+        .is_err());
         let meta = BertSpec {
             layers: 12,
             hidden: 384,
