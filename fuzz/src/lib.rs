@@ -129,4 +129,38 @@ mod tests {
             model_checks::check_sections(bytes, &sha256::digest(bytes).unwrap(), &spec).is_ok()
         );
     }
+
+    #[test]
+    fn hostile_corpus_is_rejected() {
+        for bytes in [
+            include_bytes!("../corpus/plm/overflowing-count").as_slice(),
+            include_bytes!("../corpus/plm/overflowing-offset").as_slice(),
+            include_bytes!("../corpus/plm/overlapping-sections").as_slice(),
+        ] {
+            assert!(plm::check_envelope(bytes, &sha256::digest(bytes).unwrap()).is_err());
+        }
+        let frame = include_bytes!("../corpus/frame/oversized");
+        assert!(frame::read_frame(&mut frame.as_slice(), frame::HARD_MAX_FRAME).is_err());
+        let specs = [
+            TensorSpec {
+                id: 1,
+                dtype: Dtype::I8,
+                dims: [2, 4, 0, 0],
+            },
+            TensorSpec {
+                id: 2,
+                dtype: Dtype::F32,
+                dims: [4, 0, 0, 0],
+            },
+        ];
+        let bytes = include_bytes!("../corpus/tensors/overflowing-dimension");
+        let (directory, data) = bytes.split_at(80);
+        assert!(tensors::check_values(
+            directory,
+            data,
+            &specs,
+            &[ValueRule::AnyI8, ValueRule::FiniteNormalOrZero]
+        )
+        .is_err());
+    }
 }
