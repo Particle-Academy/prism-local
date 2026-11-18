@@ -28,7 +28,11 @@ pub enum ErrorCode {
 
 pub enum Success {
     Null,
-    Settings { threads: usize, deadline_ms: usize },
+    Settings {
+        threads: usize,
+        deadline_ms: usize,
+        max_memory_mb: u64,
+    },
 }
 
 pub enum Response<'a> {
@@ -56,9 +60,10 @@ pub fn encode(
                 Success::Settings {
                     threads,
                     deadline_ms,
+                    max_memory_mb,
                 },
         } => {
-            write!(&mut dynamic_tail, ",\"result\":{{\"threads\":{threads},\"deadlineMs\":{deadline_ms},\"inferenceAvailable\":false}}}}")
+            write!(&mut dynamic_tail, ",\"result\":{{\"threads\":{threads},\"deadlineMs\":{deadline_ms},\"maxMemoryMb\":{max_memory_mb},\"memoryScope\":\"managedPayload\",\"inferenceAvailable\":false}}}}")
                 .map_err(|_| EncodeError)?;
             (id, dynamic_tail.bytes())
         }
@@ -128,14 +133,14 @@ impl ErrorCode {
 }
 
 struct StackWriter {
-    bytes: [u8; 128],
+    bytes: [u8; 256],
     len: usize,
 }
 
 impl StackWriter {
     fn new() -> Self {
         Self {
-            bytes: [0; 128],
+            bytes: [0; 256],
             len: 0,
         }
     }
@@ -240,6 +245,7 @@ mod tests {
                 result: Success::Settings {
                     threads: usize::MAX,
                     deadline_ms: usize::MAX,
+                    max_memory_mb: u64::MAX,
                 },
             },
             &mut budget,

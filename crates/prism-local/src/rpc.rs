@@ -3,11 +3,20 @@
 use crate::rpc_response::{encode, valid_id_number, EncodeError, ErrorCode, Id, Response, Success};
 use prism_local_core::{
     json_arena::{self, Arena, Kind},
-    memory_plan::{Buffer, RequestBuffers},
+    memory_plan::{checked_plan, Allocation, Buffer, RequestBuffers},
 };
 use std::time::Duration;
 
 const DEFAULT_DEADLINE_MS: usize = 30_000;
+const DEFAULT_MEMORY_MB: u64 = 1024;
+pub const FRAME_PAYLOAD_BYTES: u64 = 1024 * 1024;
+pub const ARENA_PAYLOAD_BYTES: u64 = 2 * 1024 * 1024;
+pub const RESPONSE_PAYLOAD_BYTES: u64 = 1024 * 1024;
+pub const REQUEST_PAYLOAD_BYTES: u64 =
+    FRAME_PAYLOAD_BYTES + ARENA_PAYLOAD_BYTES + RESPONSE_PAYLOAD_BYTES;
+pub const MIN_MEMORY_MB: u64 = 4;
+const _: () = assert!(REQUEST_PAYLOAD_BYTES == MIN_MEMORY_MB * 1024 * 1024);
+const _: () = assert!(FRAME_PAYLOAD_BYTES == prism_local_core::frame::HARD_MAX_FRAME as u64);
 
 #[derive(Default)]
 pub struct Server {
@@ -18,6 +27,7 @@ pub struct Server {
 struct Settings {
     threads: usize,
     deadline_ms: usize,
+    max_memory_mb: u64,
 }
 
 impl Server {
@@ -62,6 +72,13 @@ impl Server {
             .as_ref()
             .map_or(DEFAULT_DEADLINE_MS, |settings| settings.deadline_ms);
         Duration::from_millis(millis as u64)
+    }
+
+    /// During bootstrap the current fixed payload plan needs four MiB.
+    pub fn payload_memory_mib(&self) -> u64 {
+        self.settings
+            .as_ref()
+            .map_or(MIN_MEMORY_MB, |settings| settings.max_memory_mb)
     }
 
     /// On response-allocation failure the caller must terminate the stream.
@@ -158,19 +175,36 @@ impl Server {
         let cores = std::thread::available_parallelism().map_or(1, usize::from);
         let threads = option_positive(arena, params, "threads", 1)?;
         let deadline_ms = option_positive(arena, params, "deadlineMs", DEFAULT_DEADLINE_MS)?;
+        let max_memory_mb = option_positive_u64(arena, params, "maxMemoryMb", DEFAULT_MEMORY_MB)?;
         let mut child = params.and_then(|index| arena.first_child(index));
         while let Some(index) = child {
-            if !matches!(arena.key(index), Some("threads" | "deadlineMs")) {
+            if !matches!(
+                arena.key(index),
+                Some("threads" | "deadlineMs" | "maxMemoryMb")
+            ) {
                 return None;
             }
             child = arena.next_sibling(index);
         }
-        if threads > cores || !(100..=300_000).contains(&deadline_ms) {
+        if threads > cores
+            || !(100..=300_000).contains(&deadline_ms)
+            || max_memory_mb < MIN_MEMORY_MB
+            || checked_plan(
+                max_memory_mb,
+                0,
+                &[Allocation {
+                    count: REQUEST_PAYLOAD_BYTES,
+                    element_bytes: 1,
+                }],
+            )
+            .is_err()
+        {
             return None;
         }
         Some(Settings {
             threads,
             deadline_ms,
+            max_memory_mb,
         })
     }
 }
@@ -189,6 +223,18 @@ fn option_positive(
     }
 }
 
+fn option_positive_u64(
+    arena: &Arena<'_>,
+    params: Option<usize>,
+    key: &str,
+    default: u64,
+) -> Option<u64> {
+    match params.and_then(|index| arena.get(index, key)) {
+        None => Some(default),
+        Some(index) => integer(arena.number(index)?).filter(|&value| value > 0),
+    }
+}
+
 fn integer(s: &str) -> Option<u64> {
     if !s.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -201,6 +247,7 @@ impl Settings {
         Success::Settings {
             threads: self.threads,
             deadline_ms: self.deadline_ms,
+            max_memory_mb: self.max_memory_mb,
         }
     }
 }
@@ -240,7 +287,10 @@ mod tests {
         let (reply, stop) =
             s.handle(br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"threads":1}}"#);
         assert!(!stop);
-        assert!(text(reply).contains("\"inferenceAvailable\":false"));
+        let reply = text(reply);
+        assert!(reply.contains("\"inferenceAvailable\":false"));
+        assert!(reply.contains("\"maxMemoryMb\":1024"));
+        assert!(reply.contains("\"memoryScope\":\"managedPayload\""));
         let (reply, _) = s.handle(br#"{"jsonrpc":"2.0","id":"x\"y","method":"stats"}"#);
         assert!(text(reply).contains("\"id\":\"x\\\"y\""));
         let (reply, _) = s.handle(br#"{"jsonrpc":"2.0","id":"\u0000\n\\\"","method":"stats"}"#);
@@ -266,8 +316,13 @@ mod tests {
             r#"{"threads":99999999}"#,
             r#"{"deadlineMs":99}"#,
             r#"{"deadlineMs":300001}"#,
+            r#"{"maxMemoryMb":0}"#,
             r#"{"maxMemoryMb":1}"#,
-            r#"{"maxMemoryMb":64}"#,
+            r#"{"maxMemoryMb":3}"#,
+            r#"{"maxMemoryMb":4.0}"#,
+            r#"{"maxMemoryMb":-4}"#,
+            r#"{"maxMemoryMb":"4"}"#,
+            r#"{"maxMemoryMb":18446744073709551615}"#,
             r#"{"unknown":true}"#,
         ] {
             let request = format!(
@@ -331,6 +386,43 @@ mod tests {
     }
 
     #[test]
+    fn memory_budget_is_explicit_and_enforces_the_bootstrap_minimum() {
+        let mut server = Server::new();
+        assert_eq!(server.payload_memory_mib(), 4);
+        let rejected = server
+            .handle(br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"maxMemoryMb":3}}"#)
+            .0;
+        assert!(text(rejected).contains("-32602"));
+        let accepted = server.handle(br#"{"jsonrpc":"2.0","id":2,"method":"hello","params":{"threads":1,"deadlineMs":500,"maxMemoryMb":4}}"#).0;
+        assert_eq!(
+            text(accepted),
+            r#"{"jsonrpc":"2.0","id":2,"result":{"threads":1,"deadlineMs":500,"maxMemoryMb":4,"memoryScope":"managedPayload","inferenceAvailable":false}}"#
+        );
+        assert_eq!(server.payload_memory_mib(), 4);
+        let stats = text(
+            server
+                .handle(br#"{"jsonrpc":"2.0","id":3,"method":"stats"}"#)
+                .0,
+        );
+        assert!(stats.contains("\"maxMemoryMb\":4"));
+        assert!(stats.contains("\"memoryScope\":\"managedPayload\""));
+        let mut server = Server::new();
+        let reply = server
+            .handle(br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"maxMemoryMb":64}}"#)
+            .0;
+        assert!(text(reply).contains("\"maxMemoryMb\":64"));
+        assert_eq!(server.payload_memory_mib(), 64);
+        let largest = u64::MAX / (1024 * 1024);
+        let mut server = Server::new();
+        let request = format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"hello\",\"params\":{{\"maxMemoryMb\":{largest}}}}}");
+        assert!(text(server.handle(request.as_bytes()).0)
+            .contains(&format!("\"maxMemoryMb\":{largest}")));
+        let mut server = Server::new();
+        let request = format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"hello\",\"params\":{{\"maxMemoryMb\":{}}}}}", largest + 1);
+        assert!(text(server.handle(request.as_bytes()).0).contains("-32602"));
+    }
+
+    #[test]
     fn notification_does_not_need_response_storage() {
         let mut server = Server::new();
         let mut buffers = RequestBuffers::new(
@@ -362,7 +454,7 @@ mod tests {
     #[test]
     fn bounded_mutations_produce_valid_responses_or_notifications() {
         let seeds: &[&[u8]] = &[
-            br#"{"jsonrpc":"2.0","id":"\u0000\n\"","method":"hello","params":{"threads":1}}"#,
+            br#"{"jsonrpc":"2.0","id":"\u0000\n\"","method":"hello","params":{"threads":1,"maxMemoryMb":4}}"#,
             br#"{"jsonrpc":"2.0","id":-9223372036854775808,"method":"stats"}"#,
             br#"{"jsonrpc":"2.0","method":"shutdown"}"#,
         ];

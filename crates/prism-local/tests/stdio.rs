@@ -46,16 +46,28 @@ fn frame_limit_accepts_boundary_and_refuses_an_oversized_header() {
         .spawn()
         .unwrap();
     let mut input = child.stdin.take().unwrap();
-    let mut frame = br#"{"jsonrpc":"2.0","id":1,"method":"hello"}"#.to_vec();
+    let mut frame =
+        br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"maxMemoryMb":4}}"#.to_vec();
     frame.resize(HARD_MAX_FRAME, b' ');
     write_frame(&mut input, &frame, HARD_MAX_FRAME).unwrap();
     input.flush().unwrap();
-    drop(input);
     let mut output = child.stdout.take().unwrap();
     let reply = read_frame(&mut output, HARD_MAX_FRAME).unwrap().unwrap();
-    assert!(std::str::from_utf8(&reply)
+    let reply = std::str::from_utf8(&reply).unwrap();
+    assert!(reply.contains("\"maxMemoryMb\":4"));
+    assert!(reply.contains("\"memoryScope\":\"managedPayload\""));
+    write_frame(
+        &mut input,
+        br#"{"jsonrpc":"2.0","id":2,"method":"stats"}"#,
+        HARD_MAX_FRAME,
+    )
+    .unwrap();
+    input.flush().unwrap();
+    drop(input);
+    let stats = read_frame(&mut output, HARD_MAX_FRAME).unwrap().unwrap();
+    assert!(std::str::from_utf8(&stats)
         .unwrap()
-        .contains("\"inferenceAvailable\":false"));
+        .contains("\"maxMemoryMb\":4"));
     assert!(child.wait().unwrap().success());
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_prism-local"))

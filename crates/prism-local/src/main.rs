@@ -21,17 +21,17 @@ fn main() -> io::Result<()> {
     loop {
         let mut active_deadline = None;
         let plan = checked_plan(
-            4,
+            server.payload_memory_mib(),
             0,
             &[Allocation {
-                count: 4 * 1024 * 1024,
+                count: rpc::REQUEST_PAYLOAD_BYTES,
                 element_bytes: 1,
             }],
         )
         .map_err(|_| io::Error::other("invalid request payload budget"))?;
         let mut request_buffers = RequestBuffers::new(plan);
         let mut buffers = request_buffers
-            .split(1024 * 1024)
+            .split(rpc::FRAME_PAYLOAD_BYTES)
             .map_err(|_| io::Error::other("invalid frame budget"))?;
         let frame = read_frame_budgeted(
             &mut input,
@@ -46,10 +46,10 @@ fn main() -> io::Result<()> {
         let expires = active_deadline.ok_or_else(|| io::Error::other("deadline was not armed"))?;
         refuse_expired(expires);
         let mut arena_buffers = request_buffers
-            .split(2 * 1024 * 1024)
+            .split(rpc::ARENA_PAYLOAD_BYTES)
             .map_err(|_| io::Error::other("invalid JSON arena budget"))?;
         let mut response_buffers = request_buffers
-            .split(1024 * 1024)
+            .split(rpc::RESPONSE_PAYLOAD_BYTES)
             .map_err(|_| io::Error::other("invalid response budget"))?;
         let (response, stop) = server
             .handle_budgeted(frame.as_slice(), &mut arena_buffers, &mut response_buffers)
