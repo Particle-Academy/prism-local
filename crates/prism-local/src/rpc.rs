@@ -11,7 +11,6 @@ pub struct Server {
 
 struct Settings {
     threads: usize,
-    max_memory_mb: usize,
 }
 
 impl Server {
@@ -74,14 +73,10 @@ impl Server {
         }
         let cores = std::thread::available_parallelism().map_or(1, usize::from);
         let threads = option_positive(&mut params, "threads", 1)?;
-        let max_memory_mb = option_positive(&mut params, "maxMemoryMb", 64)?;
-        if !params.is_empty() || threads > cores || !(64..=4096).contains(&max_memory_mb) {
+        if !params.is_empty() || threads > cores {
             return None;
         }
-        let settings = Settings {
-            threads,
-            max_memory_mb,
-        };
+        let settings = Settings { threads };
         let result = settings_result(&settings);
         self.settings = Some(settings);
         Some(result)
@@ -113,10 +108,7 @@ fn valid_id_number(s: &str) -> bool {
     }
 }
 fn settings_result(s: &Settings) -> String {
-    format!(
-        "{{\"threads\":{},\"maxMemoryMb\":{},\"inferenceAvailable\":false}}",
-        s.threads, s.max_memory_mb
-    )
+    format!("{{\"threads\":{},\"inferenceAvailable\":false}}", s.threads)
 }
 fn error(id: &str, code: i32, message: &str) -> Vec<u8> {
     format!(
@@ -150,9 +142,8 @@ mod tests {
     #[test]
     fn hello_stats_and_shutdown_are_serial_and_notifications_are_silent() {
         let mut s = Server::new();
-        let (reply, stop) = s.handle(
-            br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"threads":1,"maxMemoryMb":64}}"#,
-        );
+        let (reply, stop) =
+            s.handle(br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"threads":1}}"#);
         assert!(!stop);
         assert!(text(reply).contains("\"inferenceAvailable\":false"));
         let (reply, _) = s.handle(br#"{"jsonrpc":"2.0","id":"x\"y","method":"stats"}"#);
@@ -173,6 +164,7 @@ mod tests {
             r#"{"threads":0}"#,
             r#"{"threads":99999999}"#,
             r#"{"maxMemoryMb":1}"#,
+            r#"{"maxMemoryMb":64}"#,
             r#"{"unknown":true}"#,
         ] {
             let request = format!(
