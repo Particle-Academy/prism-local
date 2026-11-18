@@ -68,11 +68,48 @@ will pin those digests; the engine must hash the exact immutable bytes it then
 parses, avoiding replacement between verification and use. This is a design
 requirement, not yet an implemented protection.
 
+## Conversion procedure to implement
+
+1. A developer explicitly supplies a local source snapshot, a reviewed pinned
+   manifest, a converter build and a destination. Conversion performs no
+   retrieval. Reject an incomplete manifest, unrecognized recipe or missing
+   exact input. Do not discover model files by executing source code.
+2. Read each required input into an immutable bounded buffer, check its exact
+   length and SHA-256 against the trusted manifest, and parse those same bytes.
+   The manifest names every input and the converter and toolchain revisions;
+   a digest copied from the untrusted input itself is not a trust anchor.
+   Large inputs need a separately reviewed bounded-storage strategy that keeps
+   verification and conversion tied to the same bytes.
+3. Recheck model-card license evidence and the full license bytes, including
+   the pinned historical evidence when no repository license exists. Verify
+   the copyright line in NOTICE and in the output metadata. Refuse on a missing
+   or mismatched item. Validate the architecture, tokenizer configuration,
+   exact required tensor names, shapes, dtypes and value constraints against
+   a trusted recipe; reject unexpected or duplicate entries.
+4. Apply an explicitly versioned quantization and serialization recipe with
+   fixed rounding, ordering, alignment and padding. No timestamps, random IDs,
+   filesystem order or machine paths may affect the artifact. Check allocation
+   arithmetic before allocating, and report failures without publishing partial
+   output. Output to a new temporary file and only place the result at the
+   requested destination after validation succeeds.
+5. Repeat from independently prepared clean source and build directories, then
+   compare the complete artifact bytes and SHA-256. Re-parse each artifact with
+   the complete validator, record the evidence, and seek delivery approval
+   before distributing it. A match is reproducibility evidence for the tested
+   environments, not proof that the model is safe or numerically accurate.
+
+The precise input format, complete tensor mapping, quantization recipe,
+buffering strategy and safe destination behavior must be specified and
+implemented before this procedure can run. The existing draft PLM validator
+does not authorize conversion or provide the complete re-parse in step 5.
+
 Compute reference outputs separately in a disposable, pinned environment.
 Record environment image or equivalent immutable digest, package versions and
-hashes, script source, CPU mode, input corpus digest, seeds and all numeric
-settings. Commit only reference outputs and their provenance; the disposable
-third-party environment is not a runtime or build dependency. Verify that a
+hashes, reference script digest, CPU mode, input corpus digest, seeds and all
+numeric settings. Retain the reviewed script outside the repository with its
+digest so a fresh disposable environment can repeat the run, and commit only
+reference outputs and their provenance; the disposable third-party environment
+is not a runtime or build dependency. Verify that a
 second clean reference run reproduces the committed output or explicitly
 record the observed nondeterminism before using it as a gate. Do not execute
 unreviewed model code. Model and reference data licenses must permit the
