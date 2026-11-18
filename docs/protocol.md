@@ -9,9 +9,19 @@ batch requests are not supported. Invalid or truncated frames terminate the
 stream. Invalid JSON gets a JSON-RPC parse error. Notifications receive no
 response.
 
-`hello` accepts an optional `threads` integer, at least 1 and no more than the
-process's available parallelism. Settings cannot be changed by a second hello.
-The current skeleton starts no worker threads and loads no model. **Memory
+`hello` accepts optional `threads` and `deadlineMs` integers. `threads` must be
+at least 1 and no more than the process's available parallelism; it is reserved
+for future compute workers. A single fixed watchdog thread is additional to
+that worker count. `deadlineMs` must be 100–300,000, defaulting to 30,000 ms
+before and after `hello` unless set in `hello`. Settings cannot be changed by a
+second hello. The deadline starts when the first header byte arrives and ends
+when the response is flushed, so idle time between frames is not counted. An
+expired in-flight request terminates the process with status 124; the parent
+must restart it and enforce its own deadline when accepting responses. Bytes
+already written cannot be retracted, and OS scheduling can delay termination
+beyond the nominal limit.
+
+The current skeleton starts no compute workers and loads no model. **Memory
 budgeting is not implemented:** `maxMemoryMb` is rejected rather than
 accepted as a promise the engine cannot enforce. Request allocation budgeting
 must be implemented and tested before inference is enabled; a request budget

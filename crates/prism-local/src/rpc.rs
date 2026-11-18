@@ -3,6 +3,9 @@
 use prism_local_core::json::{parse, Value};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::time::Duration;
+
+const DEFAULT_DEADLINE_MS: usize = 30_000;
 
 #[derive(Default)]
 pub struct Server {
@@ -11,11 +14,20 @@ pub struct Server {
 
 struct Settings {
     threads: usize,
+    deadline_ms: usize,
 }
 
 impl Server {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn timeout(&self) -> Duration {
+        let millis = self
+            .settings
+            .as_ref()
+            .map_or(DEFAULT_DEADLINE_MS, |settings| settings.deadline_ms);
+        Duration::from_millis(millis as u64)
     }
 
     pub fn handle(&mut self, frame: &[u8]) -> (Option<Vec<u8>>, bool) {
@@ -73,10 +85,14 @@ impl Server {
         }
         let cores = std::thread::available_parallelism().map_or(1, usize::from);
         let threads = option_positive(&mut params, "threads", 1)?;
-        if !params.is_empty() || threads > cores {
+        let deadline_ms = option_positive(&mut params, "deadlineMs", DEFAULT_DEADLINE_MS)?;
+        if !params.is_empty() || threads > cores || !(100..=300_000).contains(&deadline_ms) {
             return None;
         }
-        let settings = Settings { threads };
+        let settings = Settings {
+            threads,
+            deadline_ms,
+        };
         let result = settings_result(&settings);
         self.settings = Some(settings);
         Some(result)
@@ -108,7 +124,10 @@ fn valid_id_number(s: &str) -> bool {
     }
 }
 fn settings_result(s: &Settings) -> String {
-    format!("{{\"threads\":{},\"inferenceAvailable\":false}}", s.threads)
+    format!(
+        "{{\"threads\":{},\"deadlineMs\":{},\"inferenceAvailable\":false}}",
+        s.threads, s.deadline_ms
+    )
 }
 fn error(id: &str, code: i32, message: &str) -> Vec<u8> {
     format!(
@@ -163,6 +182,8 @@ mod tests {
         for params in [
             r#"{"threads":0}"#,
             r#"{"threads":99999999}"#,
+            r#"{"deadlineMs":99}"#,
+            r#"{"deadlineMs":300001}"#,
             r#"{"maxMemoryMb":1}"#,
             r#"{"maxMemoryMb":64}"#,
             r#"{"unknown":true}"#,

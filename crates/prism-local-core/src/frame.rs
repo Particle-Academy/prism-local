@@ -10,6 +10,16 @@ pub const HARD_MAX_FRAME: usize = 1_048_576;
 
 /// Read a single frame. `None` is a clean EOF between frames.
 pub fn read_frame<R: Read>(reader: &mut R, max: usize) -> io::Result<Option<Vec<u8>>> {
+    read_frame_started(reader, max, || Ok(()))
+}
+
+/// As `read_frame`, calling `on_start` after the first header byte is read.
+/// The callback can arm a deadline without imposing one on an idle stream.
+pub fn read_frame_started<R: Read>(
+    reader: &mut R,
+    max: usize,
+    on_start: impl FnOnce() -> io::Result<()>,
+) -> io::Result<Option<Vec<u8>>> {
     check_limit(max)?;
     let mut header = [0_u8; 4];
     loop {
@@ -20,6 +30,7 @@ pub fn read_frame<R: Read>(reader: &mut R, max: usize) -> io::Result<Option<Vec<
             Err(e) => return Err(e),
         }
     }
+    on_start()?;
     reader.read_exact(&mut header[1..])?;
     let size = usize::try_from(u32::from_be_bytes(header))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame length unsupported"))?;
@@ -65,7 +76,7 @@ fn check_limit(max: usize) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_frame, write_frame, HARD_MAX_FRAME};
+    use super::{read_frame, read_frame_started, write_frame, HARD_MAX_FRAME};
     use std::io::{self, Cursor};
 
     #[test]
@@ -102,5 +113,34 @@ mod tests {
         let mut output = Vec::new();
         assert!(write_frame(&mut output, b"", 16).is_err());
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn signals_start_only_after_first_byte() {
+        let mut starts = 0;
+        assert_eq!(
+            read_frame_started(&mut &b""[..], 16, || {
+                starts += 1;
+                Ok(())
+            })
+            .unwrap(),
+            None
+        );
+        assert_eq!(starts, 0);
+        assert!(read_frame_started(&mut &b"\0"[..], 16, || {
+            starts += 1;
+            Ok(())
+        })
+        .is_err());
+        assert_eq!(starts, 1);
+    }
+
+    #[test]
+    fn refuses_to_read_body_when_deadline_cannot_be_armed() {
+        let mut input = &b"\0\0\0\x01x"[..];
+        let error = read_frame_started(&mut input, 16, || Err(io::Error::other("unavailable")))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(input, &b"\0\0\x01x"[..]);
     }
 }

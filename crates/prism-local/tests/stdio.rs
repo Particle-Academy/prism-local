@@ -1,6 +1,7 @@
 use prism_local_core::frame::{read_frame, write_frame, HARD_MAX_FRAME};
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[test]
 fn sidecar_answers_framed_requests_and_exits_on_shutdown() {
@@ -34,4 +35,82 @@ fn sidecar_answers_framed_requests_and_exits_on_shutdown() {
     assert_eq!(shutdown, br#"{"jsonrpc":"2.0","id":2,"result":null}"#);
     assert!(read_frame(&mut output, HARD_MAX_FRAME).unwrap().is_none());
     assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn deadline_kills_stalled_partial_frame_but_does_not_expire_while_idle() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_prism-local"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = child.stdout.take().unwrap();
+    write_frame(
+        &mut input,
+        br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"deadlineMs":500}}"#,
+        HARD_MAX_FRAME,
+    )
+    .unwrap();
+    input.flush().unwrap();
+    let hello = read_frame(&mut output, HARD_MAX_FRAME).unwrap().unwrap();
+    assert!(std::str::from_utf8(&hello)
+        .unwrap()
+        .contains("\"deadlineMs\":500"));
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "idle process timed out"
+    );
+    write_frame(
+        &mut input,
+        br#"{"jsonrpc":"2.0","id":2,"method":"stats"}"#,
+        HARD_MAX_FRAME,
+    )
+    .unwrap();
+    input.flush().unwrap();
+    assert!(read_frame(&mut output, HARD_MAX_FRAME).unwrap().is_some());
+    input.write_all(&[0]).unwrap();
+    input.flush().unwrap();
+    assert_expired(&mut child);
+}
+
+#[test]
+fn deadline_kills_stalled_partial_payload() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_prism-local"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = child.stdout.take().unwrap();
+    write_frame(
+        &mut input,
+        br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"deadlineMs":500}}"#,
+        HARD_MAX_FRAME,
+    )
+    .unwrap();
+    input.flush().unwrap();
+    assert!(read_frame(&mut output, HARD_MAX_FRAME).unwrap().is_some());
+    input.write_all(&[0, 0, 0, 5, b'{']).unwrap();
+    input.flush().unwrap();
+    assert_expired(&mut child);
+}
+
+fn assert_expired(child: &mut Child) {
+    let limit = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert_eq!(status.code(), Some(124));
+            break;
+        }
+        if Instant::now() >= limit {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("partial frame did not reach its deadline");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
