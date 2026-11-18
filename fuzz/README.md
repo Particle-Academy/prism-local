@@ -10,6 +10,12 @@ fuzzer dependency. This is a harness, not evidence that a fuzz campaign ran.
 Unit tests also apply deterministic bounded mutations to valid section seeds;
 those smoke checks do not measure coverage or demonstrate a fuzzing plateau.
 
+`corpus/<target>/valid` contains synthetic seeds for each current target. A
+workspace test checks that each seed reaches its target's successful parser
+path; these are examples, not real model files or a complete fuzz corpus.
+Use a separate writable working corpus when fuzzing and retain crashing inputs
+as regression cases after review.
+
 The current targets exercise framing, JSON, the draft PLM container, tensor
 directory, metadata, vocabulary, provenance and composed section checks with small trusted test schemas. Additional
 section content, tokenization and schema-compiler targets must be added when
