@@ -1,6 +1,6 @@
 # Fuzz entry points
 
-The `plm`, `frame`, `frame_budgeted`, `json`, `json_write`, `metadata`, `tensors`, `vocab`, `provenance`, `sections`, `quantized_sections` and `safetensors` binaries read one input from stdin and exercise the
+The `plm`, `frame`, `frame_budgeted`, `json`, `json_write`, `json_decode`, `metadata`, `tensors`, `vocab`, `provenance`, `sections`, `quantized_sections` and `safetensors` binaries read one input from stdin and exercise the
 respective bounded parsers. PLM computes a matching digest so a mutator can
 reach the structural checks. Inputs over 1 MiB are ignored by the adapters;
 this is a fuzz-driver limit, not a model-file size limit. Build with

@@ -31,8 +31,10 @@ a successfully allocated output buffer alone is insufficient. The parent must
 still enforce any desired OS process limit and deadline independently.
 
 JSON string escaping can calculate its exact output length and write into fixed
-storage without growth. The current sidecar still allocates response strings
-outside a request plan, so this writer does not establish response accounting.
+storage without growth. The shared string decoder can also write to fixed
+storage, rejecting invalid strings or insufficient space. The current tree
+parser and sidecar still allocate decoded strings and responses outside a
+request plan, so these functions do not establish complete accounting.
 
 Before enabling `maxMemoryMb`, test exact-limit and one-byte-over cases,
 overflow and allocation failures, large and malicious JSON, concurrent or

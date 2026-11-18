@@ -41,6 +41,30 @@ mod tests {
         assert!(
             matches!(json::parse(&output), Ok(json::Value::String(decoded)) if decoded == value)
         );
+        let bytes = include_bytes!("../corpus/json_decode/valid");
+        let (prefix, token) = bytes.split_at(2);
+        let budget = u64::from(u16::from_le_bytes([prefix[0], prefix[1]]));
+        let plan = checked_plan(
+            1,
+            0,
+            &[Allocation {
+                count: budget,
+                element_bytes: 1,
+            }],
+        )
+        .unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        let mut output = buffers.allocate::<u8>(budget).unwrap();
+        let used = json::decode_string_into(token, output.as_mut_slice()).unwrap();
+        assert!(
+            matches!(json::parse(token), Ok(json::Value::String(decoded)) if decoded.as_bytes() == &output.as_slice()[..used])
+        );
+        let short = include_bytes!("../corpus/json_decode/short");
+        let (_, token) = short.split_at(2);
+        assert_eq!(
+            json::decode_string_into(token, &mut [0; 1]),
+            Err(json::StringDecodeError::OutputTooSmall)
+        );
         let frame = include_bytes!("../corpus/frame/valid");
         assert_eq!(
             frame::read_frame(&mut frame.as_slice(), frame::HARD_MAX_FRAME)

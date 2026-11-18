@@ -22,6 +22,130 @@ pub struct InvalidJson;
 #[derive(Debug, PartialEq, Eq)]
 pub struct OutputTooSmall;
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum StringDecodeError {
+    Invalid,
+    OutputTooSmall,
+}
+
+/// Decode exactly one JSON string token into fixed storage without allocating.
+/// On any error the output may be partially written and must be discarded.
+pub fn decode_string_into(input: &[u8], output: &mut [u8]) -> Result<usize, StringDecodeError> {
+    let mut pos = 0;
+    let mut written = 0_usize;
+    decode_string(input, &mut pos, |bytes| {
+        let end = written
+            .checked_add(bytes.len())
+            .ok_or(StringDecodeError::OutputTooSmall)?;
+        let target = output
+            .get_mut(written..end)
+            .ok_or(StringDecodeError::OutputTooSmall)?;
+        target.copy_from_slice(bytes);
+        written = end;
+        Ok(())
+    })?;
+    if pos != input.len() || std::str::from_utf8(&output[..written]).is_err() {
+        return Err(StringDecodeError::Invalid);
+    }
+    Ok(written)
+}
+
+fn decode_string(
+    input: &[u8],
+    pos: &mut usize,
+    mut emit: impl FnMut(&[u8]) -> Result<(), StringDecodeError>,
+) -> Result<(), StringDecodeError> {
+    if read_byte(input, pos)? != b'"' {
+        return Err(StringDecodeError::Invalid);
+    }
+    let mut produced = 0_usize;
+    loop {
+        let byte = read_byte(input, pos)?;
+        let mut encoded = [0_u8; 4];
+        let size = match byte {
+            b'"' => return Ok(()),
+            0..=31 => return Err(StringDecodeError::Invalid),
+            b'\\' => match read_byte(input, pos)? {
+                escape @ (b'"' | b'\\' | b'/') => {
+                    encoded[0] = escape;
+                    1
+                }
+                b'b' => {
+                    encoded[0] = 8;
+                    1
+                }
+                b'f' => {
+                    encoded[0] = 12;
+                    1
+                }
+                b'n' => {
+                    encoded[0] = b'\n';
+                    1
+                }
+                b'r' => {
+                    encoded[0] = b'\r';
+                    1
+                }
+                b't' => {
+                    encoded[0] = b'\t';
+                    1
+                }
+                b'u' => {
+                    let first = read_hex4(input, pos)?;
+                    let code = if (0xd800..=0xdbff).contains(&first) {
+                        if read_byte(input, pos)? != b'\\' || read_byte(input, pos)? != b'u' {
+                            return Err(StringDecodeError::Invalid);
+                        }
+                        let second = read_hex4(input, pos)?;
+                        if !(0xdc00..=0xdfff).contains(&second) {
+                            return Err(StringDecodeError::Invalid);
+                        }
+                        0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00)
+                    } else {
+                        first
+                    };
+                    char::from_u32(code)
+                        .ok_or(StringDecodeError::Invalid)?
+                        .encode_utf8(&mut encoded)
+                        .len()
+                }
+                _ => return Err(StringDecodeError::Invalid),
+            },
+            _ => {
+                encoded[0] = byte;
+                1
+            }
+        };
+        produced = produced
+            .checked_add(size)
+            .ok_or(StringDecodeError::Invalid)?;
+        if produced > MAX_STRING {
+            return Err(StringDecodeError::Invalid);
+        }
+        emit(&encoded[..size])?;
+    }
+}
+
+fn read_byte(input: &[u8], pos: &mut usize) -> Result<u8, StringDecodeError> {
+    let byte = *input.get(*pos).ok_or(StringDecodeError::Invalid)?;
+    *pos = pos.checked_add(1).ok_or(StringDecodeError::Invalid)?;
+    Ok(byte)
+}
+
+fn read_hex4(input: &[u8], pos: &mut usize) -> Result<u32, StringDecodeError> {
+    let mut value = 0_u32;
+    for _ in 0..4 {
+        let digit = match read_byte(input, pos)? {
+            b @ b'0'..=b'9' => b - b'0',
+            b @ b'a'..=b'f' => b - b'a' + 10,
+            b @ b'A'..=b'F' => b - b'A' + 10,
+            _ => return Err(StringDecodeError::Invalid),
+        };
+        value = value * 16 + u32::from(digit);
+    }
+    Ok(value)
+}
+
 /// Count bytes for a quoted JSON string, including escapes, without allocating.
 pub fn string_output_len(value: &str) -> Option<usize> {
     value.chars().try_fold(2_usize, |len, ch| {
@@ -187,68 +311,13 @@ impl Parser<'_> {
         }
     }
     fn string(&mut self) -> Result<String, InvalidJson> {
-        if !self.take(b'"') {
-            return Err(InvalidJson);
-        }
         let mut output = Vec::new();
-        loop {
-            let byte = *self.input.get(self.pos).ok_or(InvalidJson)?;
-            self.pos += 1;
-            match byte {
-                b'"' => return String::from_utf8(output).map_err(|_| InvalidJson),
-                0..=31 => return Err(InvalidJson),
-                b'\\' => {
-                    let escape = *self.input.get(self.pos).ok_or(InvalidJson)?;
-                    self.pos += 1;
-                    match escape {
-                        b'"' | b'\\' | b'/' => output.push(escape),
-                        b'b' => output.push(8),
-                        b'f' => output.push(12),
-                        b'n' => output.push(b'\n'),
-                        b'r' => output.push(b'\r'),
-                        b't' => output.push(b'\t'),
-                        b'u' => {
-                            let first = self.hex4()?;
-                            let code = if (0xd800..=0xdbff).contains(&first) {
-                                if !self.take(b'\\') || !self.take(b'u') {
-                                    return Err(InvalidJson);
-                                }
-                                let second = self.hex4()?;
-                                if !(0xdc00..=0xdfff).contains(&second) {
-                                    return Err(InvalidJson);
-                                }
-                                0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00)
-                            } else {
-                                first
-                            };
-                            let ch = char::from_u32(code).ok_or(InvalidJson)?;
-                            let mut buf = [0; 4];
-                            output.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-                        }
-                        _ => return Err(InvalidJson),
-                    }
-                }
-                _ => output.push(byte),
-            }
-            if output.len() > MAX_STRING {
-                return Err(InvalidJson);
-            }
-        }
-    }
-    fn hex4(&mut self) -> Result<u32, InvalidJson> {
-        let mut value = 0_u32;
-        for _ in 0..4 {
-            let b = *self.input.get(self.pos).ok_or(InvalidJson)?;
-            self.pos += 1;
-            let digit = match b {
-                b'0'..=b'9' => b - b'0',
-                b'a'..=b'f' => b - b'a' + 10,
-                b'A'..=b'F' => b - b'A' + 10,
-                _ => return Err(InvalidJson),
-            };
-            value = value * 16 + u32::from(digit);
-        }
-        Ok(value)
+        decode_string(self.input, &mut self.pos, |bytes| {
+            output.extend_from_slice(bytes);
+            Ok(())
+        })
+        .map_err(|_| InvalidJson)?;
+        String::from_utf8(output).map_err(|_| InvalidJson)
     }
     fn number(&mut self) -> Result<String, InvalidJson> {
         let start = self.pos;
@@ -295,7 +364,10 @@ impl Parser<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, string_output_len, write_string, OutputTooSmall, Value};
+    use super::{
+        decode_string_into, parse, string_output_len, write_string, OutputTooSmall,
+        StringDecodeError, Value,
+    };
 
     #[test]
     fn accepts_json_values_and_decodes_surrogate_pair() {
@@ -327,6 +399,9 @@ mod tests {
             let mut output = vec![0; needed];
             assert_eq!(write_string(value, &mut output), Ok(needed));
             assert_eq!(parse(&output), Ok(Value::String(value.to_owned())));
+            let mut decoded = vec![0; value.len()];
+            assert_eq!(decode_string_into(&output, &mut decoded), Ok(value.len()));
+            assert_eq!(decoded, value.as_bytes());
             let mut short = vec![b'x'; needed - 1];
             assert_eq!(write_string(value, &mut short), Err(OutputTooSmall));
             assert!(short.iter().all(|&byte| byte == b'x'));
@@ -335,6 +410,50 @@ mod tests {
         let mut output = vec![0; string_output_len(value).unwrap()];
         write_string(value, &mut output).unwrap();
         assert_eq!(&output, br#""\"\\\u0000\u000a\u001f""#);
+    }
+
+    #[test]
+    fn fixed_string_decoder_rejects_invalid_tokens_and_insufficient_storage() {
+        let token = br#""a\"\\\/\b\f\n\r\t\u00e9\uD83D\uDE00""#;
+        let expected = "a\"\\/\u{8}\u{c}\n\r\té😀".as_bytes();
+        let mut output = vec![0; expected.len()];
+        assert_eq!(decode_string_into(token, &mut output), Ok(expected.len()));
+        assert_eq!(output, expected);
+        let mut short = vec![0; expected.len() - 1];
+        assert_eq!(
+            decode_string_into(token, &mut short),
+            Err(StringDecodeError::OutputTooSmall)
+        );
+        let boundaries = br#""\u0000\u007f\u0800\ud7ff\ue000\uffff\ud800\udc00\udbff\udfff""#;
+        let expected = "\u{0}\u{7f}\u{800}\u{d7ff}\u{e000}\u{ffff}\u{10000}\u{10ffff}".as_bytes();
+        let mut output = vec![0; expected.len()];
+        assert_eq!(
+            decode_string_into(boundaries, &mut output),
+            Ok(expected.len())
+        );
+        assert_eq!(output, expected);
+        for invalid in [
+            &br#""\ud800""#[..],
+            &br#""\udc00""#[..],
+            &br#""\ud800\u0041""#[..],
+            &br#""\u12xz""#[..],
+            &b"\"\xff\""[..],
+            &b"\"\xc0\xaf\""[..],
+            &b"\"\xed\xa0\x80\""[..],
+            &b"\"\xf4\x90\x80\x80\""[..],
+            &b"\"\n\""[..],
+            &br#""a" trailing"#[..],
+        ] {
+            assert_eq!(
+                decode_string_into(invalid, &mut [0; 64]),
+                Err(StringDecodeError::Invalid)
+            );
+        }
+        let token = format!("\"{}\"", "a".repeat(65_537));
+        assert_eq!(
+            decode_string_into(token.as_bytes(), &mut vec![0; 65_537]),
+            Err(StringDecodeError::Invalid)
+        );
     }
     #[test]
     fn rejects_ambiguous_and_invalid_inputs() {
