@@ -118,15 +118,56 @@ pub fn check(
     data_len: u64,
     specs: &[TensorSpec],
 ) -> Result<(), InvalidDirectory> {
+    let mut scratch = allocate_scratch(specs)?;
+    check_with_scratch(directory, data_len, specs, &mut scratch)
+}
+
+/// Number of u64 elements needed for validated tensor-range scratch.
+pub fn scratch_elements(specs: &[TensorSpec]) -> Result<usize, InvalidDirectory> {
+    if specs.is_empty() || specs.len() > MAX_TENSORS {
+        return Err(InvalidDirectory);
+    }
+    specs.len().checked_mul(2).ok_or(InvalidDirectory)
+}
+
+fn allocate_scratch(specs: &[TensorSpec]) -> Result<Vec<u64>, InvalidDirectory> {
+    let count = scratch_elements(specs)?;
+    let mut scratch = Vec::new();
+    scratch
+        .try_reserve_exact(count)
+        .map_err(|_| InvalidDirectory)?;
+    scratch.resize(count, 0);
+    Ok(scratch)
+}
+
+/// Validate a directory with caller-owned scratch, without heap allocation.
+/// Scratch contents are unspecified after either success or failure.
+pub fn check_with_scratch(
+    directory: &[u8],
+    data_len: u64,
+    specs: &[TensorSpec],
+    scratch: &mut [u64],
+) -> Result<(), InvalidDirectory> {
     if specs.is_empty()
         || specs.len() > MAX_TENSORS
         || specs.len().checked_mul(ENTRY) != Some(directory.len())
     {
         return Err(InvalidDirectory);
     }
-    let mut ranges = Vec::with_capacity(specs.len());
+    let required = scratch_elements(specs)?;
+    let ranges = scratch.get_mut(..required).ok_or(InvalidDirectory)?;
+    let (ranges, remainder) = ranges.as_chunks_mut::<2>();
+    if !remainder.is_empty() {
+        return Err(InvalidDirectory);
+    }
     let mut previous_id = None;
-    for (record, spec) in directory.as_chunks::<ENTRY>().0.iter().zip(specs) {
+    for ((record, spec), range) in directory
+        .as_chunks::<ENTRY>()
+        .0
+        .iter()
+        .zip(specs)
+        .zip(ranges.iter_mut())
+    {
         if previous_id.is_some_and(|previous| previous >= spec.id) {
             return Err(InvalidDirectory);
         }
@@ -165,10 +206,10 @@ pub fn check(
         if offset % 64 != 0 || length != expected || end > data_len {
             return Err(InvalidDirectory);
         }
-        ranges.push((offset, end));
+        *range = [offset, end];
     }
     ranges.sort_unstable();
-    if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+    if ranges.windows(2).any(|pair| pair[0][1] > pair[1][0]) {
         return Err(InvalidDirectory);
     }
     Ok(())
@@ -184,18 +225,30 @@ pub fn check_values(
     specs: &[TensorSpec],
     rules: &[ValueRule],
 ) -> Result<(), InvalidDirectory> {
+    let mut scratch = allocate_scratch(specs)?;
+    check_values_with_scratch(directory, data, specs, rules, &mut scratch)
+}
+
+/// Validate directory, payloads and padding with caller-owned range scratch.
+/// The input and scratch must be separately charged to the caller's plan.
+pub fn check_values_with_scratch(
+    directory: &[u8],
+    data: &[u8],
+    specs: &[TensorSpec],
+    rules: &[ValueRule],
+    scratch: &mut [u64],
+) -> Result<(), InvalidDirectory> {
     if rules.len() != specs.len() {
         return Err(InvalidDirectory);
     }
-    check(
+    let required = scratch_elements(specs)?;
+    let scratch = scratch.get_mut(..required).ok_or(InvalidDirectory)?;
+    check_with_scratch(
         directory,
         u64::try_from(data.len()).map_err(|_| InvalidDirectory)?,
         specs,
+        scratch,
     )?;
-    let mut ranges = Vec::new();
-    ranges
-        .try_reserve_exact(specs.len())
-        .map_err(|_| InvalidDirectory)?;
     for ((record, spec), rule) in directory
         .as_chunks::<ENTRY>()
         .0
@@ -210,7 +263,6 @@ pub fn check_values(
             .checked_add(usize::try_from(length).map_err(|_| InvalidDirectory)?)
             .ok_or(InvalidDirectory)?;
         let payload = data.get(start..end).ok_or(InvalidDirectory)?;
-        ranges.push((start, end));
         let valid = match (spec.dtype, rule) {
             (Dtype::I8, ValueRule::AnyI8) => true,
             (Dtype::F16, ValueRule::FiniteNormalOrZero) => payload
@@ -239,9 +291,10 @@ pub fn check_values(
             return Err(InvalidDirectory);
         }
     }
-    ranges.sort_unstable();
     let mut next = 0;
-    for (start, end) in ranges {
+    for &[start, end] in scratch.as_chunks::<2>().0 {
+        let start = usize::try_from(start).map_err(|_| InvalidDirectory)?;
+        let end = usize::try_from(end).map_err(|_| InvalidDirectory)?;
         if data
             .get(next..start)
             .ok_or(InvalidDirectory)?
@@ -276,9 +329,10 @@ fn valid_float(bits: u32, mantissa_bits: u32, exponent_bits: u32, positive: bool
 #[cfg(test)]
 mod tests {
     use super::{
-        check, check_row_scales, check_values, Dtype, InvalidDirectory, RowScale, TensorSpec,
-        ValueRule,
+        check, check_row_scales, check_values, check_values_with_scratch, check_with_scratch,
+        scratch_elements, Dtype, InvalidDirectory, RowScale, TensorSpec, ValueRule,
     };
+    use crate::memory_plan::{checked_plan, Allocation, Error, RequestBuffers};
 
     fn entry(id: u32, dtype: u8, rank: u8, dims: [u32; 4], offset: u64, len: u64) -> Vec<u8> {
         let mut b = vec![0; 40];
@@ -432,8 +486,59 @@ mod tests {
     #[test]
     fn mutation_smoke_never_panics() {
         crate::test_support::mutate(&valid(), |input| {
-            let _ = check(input, 80, &schema());
+            let mut scratch = [0_u64; 4];
+            let _ = check_with_scratch(input, 80, &schema(), &mut scratch);
         });
+    }
+
+    #[test]
+    fn caller_owned_tensor_ranges_are_bounded_and_sorted_for_padding() {
+        let mut directory = valid();
+        directory[24..32].copy_from_slice(&64_u64.to_le_bytes());
+        directory[64..72].copy_from_slice(&0_u64.to_le_bytes());
+        let mut data = vec![0_u8; 72];
+        let rules = [ValueRule::AnyI8, ValueRule::FiniteNormalOrZero];
+        assert_eq!(scratch_elements(&schema()), Ok(4));
+        let plan = checked_plan(
+            1,
+            0,
+            &[Allocation {
+                count: 4,
+                element_bytes: 8,
+            }],
+        )
+        .unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        let mut scratch = buffers.allocate::<u64>(4).unwrap();
+        assert_eq!(
+            check_values_with_scratch(&directory, &data, &schema(), &rules, scratch.as_mut_slice()),
+            Ok(())
+        );
+        assert_eq!(buffers.remaining_bytes(), 0);
+        assert_eq!(
+            check_values_with_scratch(&directory, &data, &schema(), &rules, &mut [0; 3]),
+            Err(InvalidDirectory)
+        );
+        data[32] = 1;
+        assert_eq!(
+            check_values_with_scratch(&directory, &data, &schema(), &rules, scratch.as_mut_slice()),
+            Err(InvalidDirectory)
+        );
+        let mut buffers = RequestBuffers::new(
+            checked_plan(
+                1,
+                0,
+                &[Allocation {
+                    count: 31,
+                    element_bytes: 1,
+                }],
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            buffers.allocate::<u64>(4),
+            Err(Error::ExceedsBudget)
+        ));
     }
 
     #[test]

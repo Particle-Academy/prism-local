@@ -37,23 +37,29 @@ pub fn check_sections(
     check_sections_inner(bytes, digest, spec, None)
 }
 
-/// As `check_sections`, but uses caller-owned vocabulary scratch. The input,
-/// scratch and every other live allocation must be included in the caller's
-/// memory plan. This still does not authorize model loading.
+/// As `check_sections`, but uses caller-owned tensor and vocabulary scratch.
+/// The input, scratch and every other live allocation must be included in the
+/// caller's memory plan. This still does not authorize model loading.
 pub fn check_sections_with_scratch(
     bytes: &[u8],
     digest: &[u8; 32],
     spec: &TrustedSections<'_>,
-    scratch: &mut [u64],
+    tensor_scratch: &mut [u64],
+    vocabulary_scratch: &mut [u64],
 ) -> Result<IncompleteChecks, Error> {
-    check_sections_inner(bytes, digest, spec, Some(scratch))
+    check_sections_inner(
+        bytes,
+        digest,
+        spec,
+        Some((tensor_scratch, vocabulary_scratch)),
+    )
 }
 
 fn check_sections_inner(
     bytes: &[u8],
     digest: &[u8; 32],
     spec: &TrustedSections<'_>,
-    scratch: Option<&mut [u64]>,
+    scratch: Option<(&mut [u64], &mut [u64])>,
 ) -> Result<IncompleteChecks, Error> {
     if spec.metadata.vocab != spec.vocabulary.count
         || spec.tensors.len() != spec.tensor_values.len()
@@ -64,17 +70,26 @@ fn check_sections_inner(
     let envelope = plm::check_envelope(bytes, digest).map_err(Error::Envelope)?;
     metadata::check_bert(envelope.section(plm::Section::Metadata), spec.metadata)
         .map_err(|_| Error::Metadata)?;
-    tensors::check_values(
-        envelope.section(plm::Section::TensorDirectory),
-        envelope.section(plm::Section::TensorData),
-        spec.tensors,
-        spec.tensor_values,
-    )
-    .map_err(|_| Error::Tensors)?;
+    let directory = envelope.section(plm::Section::TensorDirectory);
+    let data = envelope.section(plm::Section::TensorData);
     let vocabulary = envelope.section(plm::Section::Vocabulary);
     match scratch {
-        Some(scratch) => vocab::check_with_scratch(vocabulary, spec.vocabulary, scratch),
-        None => vocab::check(vocabulary, spec.vocabulary),
+        Some((tensor_scratch, vocabulary_scratch)) => {
+            tensors::check_values_with_scratch(
+                directory,
+                data,
+                spec.tensors,
+                spec.tensor_values,
+                tensor_scratch,
+            )
+            .map_err(|_| Error::Tensors)?;
+            vocab::check_with_scratch(vocabulary, spec.vocabulary, vocabulary_scratch)
+        }
+        None => {
+            tensors::check_values(directory, data, spec.tensors, spec.tensor_values)
+                .map_err(|_| Error::Tensors)?;
+            vocab::check(vocabulary, spec.vocabulary)
+        }
     }
     .map_err(|_| Error::Vocabulary)?;
     provenance::check(envelope.section(plm::Section::Provenance), spec.provenance)
@@ -238,13 +253,18 @@ mod tests {
         let digest = sha256::digest(&b).unwrap();
         assert_eq!(check_sections(&b, &digest, &spec), Ok(IncompleteChecks));
         let mut scratch = [0; 5];
+        let mut tensor_scratch = [0; 2];
         assert_eq!(
-            check_sections_with_scratch(&b, &digest, &spec, &mut scratch),
+            check_sections_with_scratch(&b, &digest, &spec, &mut tensor_scratch, &mut scratch),
             Ok(IncompleteChecks)
         );
         assert_eq!(
-            check_sections_with_scratch(&b, &digest, &spec, &mut scratch[..4]),
+            check_sections_with_scratch(&b, &digest, &spec, &mut tensor_scratch, &mut scratch[..4]),
             Err(Error::Vocabulary)
+        );
+        assert_eq!(
+            check_sections_with_scratch(&b, &digest, &spec, &mut tensor_scratch[..1], &mut scratch),
+            Err(Error::Tensors)
         );
         let row_tensors = [
             TensorSpec {

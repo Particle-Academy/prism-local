@@ -1,4 +1,6 @@
-use prism_local_core::tensors::{check, check_values, Dtype, TensorSpec, ValueRule};
+use prism_local_core::tensors::{
+    check_values_with_scratch, check_with_scratch, Dtype, TensorSpec, ValueRule,
+};
 
 fn main() -> std::io::Result<()> {
     let specs = [
@@ -14,13 +16,15 @@ fn main() -> std::io::Result<()> {
         },
     ];
     if let Some(bytes) = prism_local_fuzz::input()? {
-        let _ = check(&bytes, 1024, &specs);
+        let mut scratch = [0_u64; 4];
+        let _ = check_with_scratch(&bytes, 1024, &specs, &mut scratch);
         if let Some((directory, data)) = bytes.split_at_checked(80) {
-            let _ = check_values(
+            let _ = check_values_with_scratch(
                 directory,
                 data,
                 &specs,
                 &[ValueRule::AnyI8, ValueRule::FiniteNormalOrZero],
+                &mut scratch,
             );
         }
     }

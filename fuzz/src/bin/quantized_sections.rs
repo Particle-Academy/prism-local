@@ -1,6 +1,6 @@
 use prism_local_core::{
     metadata::BertSpec,
-    model_checks::{check_sections, TrustedSections},
+    model_checks::{check_sections_with_scratch, TrustedSections},
     provenance::{LicenseKind, ProvenanceSpec, Source},
     sha256,
     tensors::{Dtype, RowScale, TensorSpec, ValueRule},
@@ -71,7 +71,7 @@ fn main() -> std::io::Result<()> {
     };
     if let Some(bytes) = prism_local_fuzz::input()? {
         if let Some(digest) = sha256::digest(&bytes) {
-            let _ = check_sections(&bytes, &digest, &spec);
+            let _ = check_sections_with_scratch(&bytes, &digest, &spec, &mut [0; 4], &mut [0; 5]);
         }
     }
     Ok(())

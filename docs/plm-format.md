@@ -100,11 +100,11 @@ most 1,024 bytes. The section is limited to 16 MiB and 131,072 entries.
 The checker does not implement or validate the behavior of normalization or
 WordPiece tokenization, and no BGE vocabulary schema is registered yet. A
 passing vocabulary section does not make a model valid or loadable.
-The vocabulary checker also offers a caller-owned scratch path: one u64 per
-trusted vocabulary entry, holding validated input ranges while uniqueness is
-checked. The composed draft checks expose this path too. The caller must plan
-and charge the scratch and immutable input separately; other section checks
-still have their own allocations, and this is not a complete model-memory cap.
+The tensor and vocabulary checkers also offer caller-owned scratch paths: two
+u64s per trusted tensor and one u64 per trusted vocabulary entry, holding
+validated input ranges for overlap, padding and uniqueness checks. The composed
+draft checks expose both paths. The caller must plan and charge the scratch and
+immutable input separately; this is not a complete model-memory cap.
 
 ## Draft provenance section
 
