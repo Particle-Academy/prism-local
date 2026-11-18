@@ -1,4 +1,4 @@
-use prism_local_core::vocab::{check, VocabSpec};
+use prism_local_core::vocab::{check_with_scratch, VocabSpec};
 
 fn main() -> std::io::Result<()> {
     let spec = VocabSpec {
@@ -13,7 +13,8 @@ fn main() -> std::io::Result<()> {
         ],
     };
     if let Some(bytes) = prism_local_fuzz::input()? {
-        let _ = check(&bytes, &spec);
+        let mut scratch = [0_u64; 5];
+        let _ = check_with_scratch(&bytes, &spec, &mut scratch);
     }
     Ok(())
 }

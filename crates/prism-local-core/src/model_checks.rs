@@ -34,6 +34,27 @@ pub fn check_sections(
     digest: &[u8; 32],
     spec: &TrustedSections<'_>,
 ) -> Result<IncompleteChecks, Error> {
+    check_sections_inner(bytes, digest, spec, None)
+}
+
+/// As `check_sections`, but uses caller-owned vocabulary scratch. The input,
+/// scratch and every other live allocation must be included in the caller's
+/// memory plan. This still does not authorize model loading.
+pub fn check_sections_with_scratch(
+    bytes: &[u8],
+    digest: &[u8; 32],
+    spec: &TrustedSections<'_>,
+    scratch: &mut [u64],
+) -> Result<IncompleteChecks, Error> {
+    check_sections_inner(bytes, digest, spec, Some(scratch))
+}
+
+fn check_sections_inner(
+    bytes: &[u8],
+    digest: &[u8; 32],
+    spec: &TrustedSections<'_>,
+    scratch: Option<&mut [u64]>,
+) -> Result<IncompleteChecks, Error> {
     if spec.metadata.vocab != spec.vocabulary.count
         || spec.tensors.len() != spec.tensor_values.len()
         || tensors::check_row_scales(spec.tensors, spec.tensor_values, spec.row_scales).is_err()
@@ -50,8 +71,12 @@ pub fn check_sections(
         spec.tensor_values,
     )
     .map_err(|_| Error::Tensors)?;
-    vocab::check(envelope.section(plm::Section::Vocabulary), spec.vocabulary)
-        .map_err(|_| Error::Vocabulary)?;
+    let vocabulary = envelope.section(plm::Section::Vocabulary);
+    match scratch {
+        Some(scratch) => vocab::check_with_scratch(vocabulary, spec.vocabulary, scratch),
+        None => vocab::check(vocabulary, spec.vocabulary),
+    }
+    .map_err(|_| Error::Vocabulary)?;
     provenance::check(envelope.section(plm::Section::Provenance), spec.provenance)
         .map_err(|_| Error::Provenance)?;
     Ok(IncompleteChecks)
@@ -59,7 +84,9 @@ pub fn check_sections(
 
 #[cfg(test)]
 mod tests {
-    use super::{check_sections, Error, IncompleteChecks, TrustedSections};
+    use super::{
+        check_sections, check_sections_with_scratch, Error, IncompleteChecks, TrustedSections,
+    };
     use crate::{
         metadata::BertSpec,
         plm,
@@ -210,6 +237,15 @@ mod tests {
         let b = envelope(&parts);
         let digest = sha256::digest(&b).unwrap();
         assert_eq!(check_sections(&b, &digest, &spec), Ok(IncompleteChecks));
+        let mut scratch = [0; 5];
+        assert_eq!(
+            check_sections_with_scratch(&b, &digest, &spec, &mut scratch),
+            Ok(IncompleteChecks)
+        );
+        assert_eq!(
+            check_sections_with_scratch(&b, &digest, &spec, &mut scratch[..4]),
+            Err(Error::Vocabulary)
+        );
         let row_tensors = [
             TensorSpec {
                 id: 1,

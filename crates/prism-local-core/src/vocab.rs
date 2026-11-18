@@ -18,28 +18,34 @@ pub struct InvalidVocab;
 /// Check IDs, spellings, UTF-8, uniqueness, bounds and exact section length.
 /// This does not perform BERT normalization or WordPiece tokenization.
 pub fn check(bytes: &[u8], spec: &VocabSpec<'_>) -> Result<(), InvalidVocab> {
+    let count = validate_header(bytes, spec)?;
+    let mut scratch = Vec::new();
+    scratch.try_reserve_exact(count).map_err(|_| InvalidVocab)?;
+    scratch.resize(count, 0);
+    check_with_scratch(bytes, spec, &mut scratch)
+}
+
+/// Number of u64 scratch elements required by the supplied trusted schema.
+/// The input bytes and the scratch allocation must be accounted separately.
+pub fn scratch_elements(spec: &VocabSpec<'_>) -> Result<usize, InvalidVocab> {
     let count = usize::try_from(spec.count).map_err(|_| InvalidVocab)?;
-    if !(5..=MAX_VOCAB).contains(&count) || bytes.len() < HEADER || bytes.len() > MAX_SECTION_BYTES
-    {
+    if !(5..=MAX_VOCAB).contains(&count) {
         return Err(InvalidVocab);
     }
-    if read32(bytes, 0)? != spec.count || read32(bytes, 4)? != spec.flags || read32(bytes, 28)? != 0
-    {
-        return Err(InvalidVocab);
-    }
-    for (index, (id, spelling)) in spec.special.iter().enumerate() {
-        if *id >= spec.count
-            || spelling.is_empty()
-            || read32(bytes, 8 + 4 * index)? != *id
-            || spec.special[..index].iter().any(|(other, _)| other == id)
-        {
-            return Err(InvalidVocab);
-        }
-    }
-    let mut tokens = Vec::new();
-    tokens.try_reserve_exact(count).map_err(|_| InvalidVocab)?;
+    Ok(count)
+}
+
+/// Validate using caller-owned scratch; no heap allocation is performed here.
+/// The caller must discard the scratch contents after either success or failure.
+pub fn check_with_scratch(
+    bytes: &[u8],
+    spec: &VocabSpec<'_>,
+    scratch: &mut [u64],
+) -> Result<(), InvalidVocab> {
+    let count = validate_header(bytes, spec)?;
+    let scratch = scratch.get_mut(..count).ok_or(InvalidVocab)?;
     let mut pos = HEADER;
-    for index in 0..count {
+    for (index, slot) in scratch.iter_mut().enumerate() {
         let len_end = pos.checked_add(2).ok_or(InvalidVocab)?;
         let len = u16::from_le_bytes(
             bytes
@@ -62,17 +68,50 @@ pub fn check(bytes: &[u8], spec: &VocabSpec<'_>) -> Result<(), InvalidVocab> {
         {
             return Err(InvalidVocab);
         }
-        tokens.push(token);
+        let offset = u32::try_from(len_end).map_err(|_| InvalidVocab)?;
+        let length = u32::try_from(len).map_err(|_| InvalidVocab)?;
+        *slot = (u64::from(offset) << 32) | u64::from(length);
         pos = end;
     }
     if pos != bytes.len() {
         return Err(InvalidVocab);
     }
-    tokens.sort_unstable();
-    if tokens.windows(2).any(|pair| pair[0] == pair[1]) {
+    // Entries are packed only after their ranges were validated above, so
+    // comparisons never index outside the original immutable input.
+    let token_bytes = |entry: u64| {
+        let start = (entry >> 32) as usize;
+        let length = (entry as u32) as usize;
+        &bytes[start..start + length]
+    };
+    scratch.sort_unstable_by(|left, right| token_bytes(*left).cmp(token_bytes(*right)));
+    if scratch
+        .windows(2)
+        .any(|pair| token_bytes(pair[0]) == token_bytes(pair[1]))
+    {
         return Err(InvalidVocab);
     }
     Ok(())
+}
+
+fn validate_header(bytes: &[u8], spec: &VocabSpec<'_>) -> Result<usize, InvalidVocab> {
+    let count = scratch_elements(spec)?;
+    if bytes.len() < HEADER || bytes.len() > MAX_SECTION_BYTES {
+        return Err(InvalidVocab);
+    }
+    if read32(bytes, 0)? != spec.count || read32(bytes, 4)? != spec.flags || read32(bytes, 28)? != 0
+    {
+        return Err(InvalidVocab);
+    }
+    for (index, (id, spelling)) in spec.special.iter().enumerate() {
+        if *id >= spec.count
+            || spelling.is_empty()
+            || read32(bytes, 8 + 4 * index)? != *id
+            || spec.special[..index].iter().any(|(other, _)| other == id)
+        {
+            return Err(InvalidVocab);
+        }
+    }
+    Ok(count)
 }
 
 fn read32(bytes: &[u8], pos: usize) -> Result<u32, InvalidVocab> {
@@ -88,7 +127,8 @@ fn read32(bytes: &[u8], pos: usize) -> Result<u32, InvalidVocab> {
 
 #[cfg(test)]
 mod tests {
-    use super::{check, InvalidVocab, VocabSpec};
+    use super::{check, check_with_scratch, scratch_elements, InvalidVocab, VocabSpec};
+    use crate::memory_plan::{checked_plan, Allocation, Error, RequestBuffers};
 
     fn spec() -> VocabSpec<'static> {
         VocabSpec {
@@ -156,7 +196,67 @@ mod tests {
     #[test]
     fn mutation_smoke_never_panics() {
         crate::test_support::mutate(&section(), |input| {
-            let _ = check(input, &spec());
+            let mut scratch = [0_u64; 6];
+            let _ = check_with_scratch(input, &spec(), &mut scratch);
         });
+    }
+
+    #[test]
+    fn caller_owned_scratch_must_fit_and_handles_duplicates() {
+        assert_eq!(scratch_elements(&spec()), Ok(6));
+        let mut short = [0_u64; 5];
+        assert_eq!(
+            check_with_scratch(&section(), &spec(), &mut short),
+            Err(InvalidVocab)
+        );
+        let mut scratch = [u64::MAX; 6];
+        assert_eq!(
+            check_with_scratch(&section(), &spec(), &mut scratch),
+            Ok(())
+        );
+        let mut duplicate = section();
+        let end = duplicate.len();
+        duplicate[end - 5..].copy_from_slice(b"[PAD]");
+        assert_eq!(
+            check_with_scratch(&duplicate, &spec(), &mut scratch),
+            Err(InvalidVocab)
+        );
+        let mut invalid = spec();
+        invalid.count = u32::MAX;
+        assert_eq!(scratch_elements(&invalid), Err(InvalidVocab));
+    }
+
+    #[test]
+    fn scratch_can_be_charged_to_a_caller_memory_plan() {
+        let plan = checked_plan(
+            1,
+            0,
+            &[Allocation {
+                count: 6,
+                element_bytes: 8,
+            }],
+        )
+        .unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        let mut scratch = buffers.allocate::<u64>(6).unwrap();
+        assert_eq!(
+            check_with_scratch(&section(), &spec(), scratch.as_mut_slice()),
+            Ok(())
+        );
+        assert_eq!(buffers.remaining_bytes(), 0);
+        let plan = checked_plan(
+            1,
+            0,
+            &[Allocation {
+                count: 47,
+                element_bytes: 1,
+            }],
+        )
+        .unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        assert!(matches!(
+            buffers.allocate::<u64>(6),
+            Err(Error::ExceedsBudget)
+        ));
     }
 }
