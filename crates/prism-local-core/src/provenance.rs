@@ -3,6 +3,21 @@
 const MAX_SECTION: usize = 1024 * 1024;
 const MAX_SOURCES: usize = 64;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LicenseKind {
+    Mit,
+    Apache2,
+}
+
+impl LicenseKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Mit => "mit",
+            Self::Apache2 => "apache-2.0",
+        }
+    }
+}
+
 pub struct Source<'a> {
     pub name: &'a str,
     pub sha256: [u8; 32],
@@ -12,8 +27,11 @@ pub struct ProvenanceSpec<'a> {
     pub revision: &'a str,
     pub publisher: &'a str,
     pub converter: &'a str,
+    pub license_kind: LicenseKind,
     pub license: &'a str,
     pub copyright: &'a str,
+    /// Exact trusted notice text, empty only when no notice is required.
+    pub notice: &'a str,
     /// Sorted by source name, with no duplicates.
     pub sources: &'a [Source<'a>],
 }
@@ -27,8 +45,9 @@ pub fn check(bytes: &[u8], spec: &ProvenanceSpec<'_>) -> Result<(), InvalidProve
     if bytes.len() > MAX_SECTION
         || spec.sources.is_empty()
         || spec.sources.len() > MAX_SOURCES
-        || spec.copyright.is_empty()
-        || !spec.license.lines().any(|line| line == spec.copyright)
+        || (spec.license_kind == LicenseKind::Mit
+            && (spec.copyright.is_empty()
+                || !spec.license.lines().any(|line| line == spec.copyright)))
         || spec
             .sources
             .windows(2)
@@ -46,12 +65,15 @@ pub fn check(bytes: &[u8], spec: &ProvenanceSpec<'_>) -> Result<(), InvalidProve
         spec.revision,
         spec.publisher,
         spec.converter,
+        spec.license_kind.label(),
         spec.license,
-        spec.copyright,
     ] {
         if expected.is_empty() || cursor.text()? != expected {
             return Err(InvalidProvenance);
         }
+    }
+    if cursor.text_allow_empty()? != spec.copyright || cursor.text_allow_empty()? != spec.notice {
+        return Err(InvalidProvenance);
     }
     for source in spec.sources {
         if source.name.is_empty()
@@ -79,25 +101,31 @@ impl<'a> Cursor<'a> {
         Ok(value)
     }
     fn text(&mut self) -> Result<&'a str, InvalidProvenance> {
-        let len = u16::from_le_bytes(self.take(2)?.try_into().map_err(|_| InvalidProvenance)?);
-        if len == 0 {
+        let value = self.text_allow_empty()?;
+        if value.is_empty() {
             return Err(InvalidProvenance);
         }
+        Ok(value)
+    }
+    fn text_allow_empty(&mut self) -> Result<&'a str, InvalidProvenance> {
+        let len = u16::from_le_bytes(self.take(2)?.try_into().map_err(|_| InvalidProvenance)?);
         std::str::from_utf8(self.take(usize::from(len))?).map_err(|_| InvalidProvenance)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{check, InvalidProvenance, ProvenanceSpec, Source};
+    use super::{check, InvalidProvenance, LicenseKind, ProvenanceSpec, Source};
     fn spec<'a>(sources: &'a [Source<'a>]) -> ProvenanceSpec<'a> {
         ProvenanceSpec {
             repository: "publisher/model",
             revision: "abc",
             publisher: "publisher",
             converter: "v1",
+            license_kind: LicenseKind::Mit,
             license: "MIT\nCopyright (c) 2022 Example\n",
             copyright: "Copyright (c) 2022 Example",
+            notice: "",
             sources,
         }
     }
@@ -108,8 +136,10 @@ mod tests {
             "abc",
             "publisher",
             "v1",
+            "mit",
             "MIT\nCopyright (c) 2022 Example\n",
             "Copyright (c) 2022 Example",
+            "",
             "model.bin",
         ] {
             b.extend_from_slice(&(value.len() as u16).to_le_bytes());
@@ -140,6 +170,13 @@ mod tests {
         let mut altered = b.clone();
         altered.push(0);
         assert_eq!(check(&altered, &s), Err(InvalidProvenance));
+        let mut altered = b.clone();
+        let license_id = altered
+            .windows(3)
+            .position(|window| window == b"mit")
+            .unwrap();
+        altered[license_id..license_id + 3].copy_from_slice(b"gpl");
+        assert_eq!(check(&altered, &s), Err(InvalidProvenance));
         let mut wrong = spec(&sources);
         wrong.copyright = "other";
         assert_eq!(check(&b, &wrong), Err(InvalidProvenance));
@@ -157,6 +194,49 @@ mod tests {
             },
         ];
         assert_eq!(check(&section(), &spec(&sources)), Err(InvalidProvenance));
+    }
+
+    #[test]
+    fn supports_apache_without_inventing_a_copyright_line_and_checks_notice() {
+        let sources = [Source {
+            name: "model.bin",
+            sha256: [7; 32],
+        }];
+        let spec = ProvenanceSpec {
+            repository: "publisher/model",
+            revision: "abc",
+            publisher: "publisher",
+            converter: "v1",
+            license_kind: LicenseKind::Apache2,
+            license: "Synthetic Apache-2.0 license text\n",
+            copyright: "",
+            notice: "Required upstream notice\n",
+            sources: &sources,
+        };
+        let mut bytes = 1_u32.to_le_bytes().to_vec();
+        for text in [
+            spec.repository,
+            spec.revision,
+            spec.publisher,
+            spec.converter,
+            "apache-2.0",
+            spec.license,
+            spec.copyright,
+            spec.notice,
+            "model.bin",
+        ] {
+            bytes.extend_from_slice(&(text.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(text.as_bytes());
+        }
+        bytes.extend_from_slice(&[7; 32]);
+        assert_eq!(check(&bytes, &spec), Ok(()));
+        let wrong_notice = ProvenanceSpec { notice: "", ..spec };
+        assert_eq!(check(&bytes, &wrong_notice), Err(InvalidProvenance));
+        let wrong_kind = ProvenanceSpec {
+            license_kind: LicenseKind::Mit,
+            ..spec
+        };
+        assert_eq!(check(&bytes, &wrong_kind), Err(InvalidProvenance));
     }
 
     #[test]

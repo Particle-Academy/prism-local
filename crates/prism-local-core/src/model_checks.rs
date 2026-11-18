@@ -63,7 +63,7 @@ mod tests {
     use crate::{
         metadata::BertSpec,
         plm,
-        provenance::{ProvenanceSpec, Source},
+        provenance::{LicenseKind, ProvenanceSpec, Source},
         sha256,
         tensors::{Dtype, RowScale, TensorSpec, ValueRule},
         vocab::VocabSpec,
@@ -117,8 +117,10 @@ mod tests {
             "abc",
             "p",
             "v1",
+            "mit",
             "MIT\nCopyright Example\n",
             "Copyright Example",
+            "",
             "weights",
         ] {
             append_text(&mut b, value);
@@ -184,8 +186,10 @@ mod tests {
             revision: "abc",
             publisher: "p",
             converter: "v1",
+            license_kind: LicenseKind::Mit,
             license: "MIT\nCopyright Example\n",
             copyright: "Copyright Example",
+            notice: "",
             sources: &sources,
         };
         let spec = TrustedSections {

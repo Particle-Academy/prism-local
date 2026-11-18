@@ -1,7 +1,7 @@
 use prism_local_core::{
     metadata::BertSpec,
     model_checks::{check_sections, TrustedSections},
-    provenance::{ProvenanceSpec, Source},
+    provenance::{LicenseKind, ProvenanceSpec, Source},
     sha256,
     tensors::{Dtype, TensorSpec, ValueRule},
     vocab::VocabSpec,
@@ -44,8 +44,10 @@ fn main() -> std::io::Result<()> {
         revision: "abc",
         publisher: "p",
         converter: "v1",
+        license_kind: LicenseKind::Mit,
         license: "MIT\nCopyright Example\n",
         copyright: "Copyright Example",
+        notice: "",
         sources: &sources,
     };
     let spec = TrustedSections {

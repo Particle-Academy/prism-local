@@ -22,7 +22,7 @@ mod tests {
         metadata::{self, BertSpec},
         model_checks::{self, TrustedSections},
         plm,
-        provenance::{self, ProvenanceSpec, Source},
+        provenance::{self, LicenseKind, ProvenanceSpec, Source},
         sha256,
         tensors::{self, Dtype, RowScale, TensorSpec, ValueRule},
         vocab::{self, VocabSpec},
@@ -71,12 +71,24 @@ mod tests {
             revision: "abc",
             publisher: "p",
             converter: "v1",
+            license_kind: LicenseKind::Mit,
             license: "MIT\nCopyright Example\n",
             copyright: "Copyright Example",
+            notice: "",
             sources: &sources,
         };
         assert!(
             provenance::check(include_bytes!("../corpus/provenance/valid"), &provenance).is_ok()
+        );
+        let apache = ProvenanceSpec {
+            license_kind: LicenseKind::Apache2,
+            license: "Synthetic Apache-2.0 license text\n",
+            copyright: "",
+            notice: "Required upstream notice\n",
+            ..provenance
+        };
+        assert!(
+            provenance::check(include_bytes!("../corpus/provenance/valid-apache"), &apache).is_ok()
         );
         let tensor_specs = [
             TensorSpec {

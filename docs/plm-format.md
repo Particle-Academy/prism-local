@@ -103,15 +103,20 @@ passing vocabulary section does not make a model valid or loadable.
 
 ## Draft provenance section
 
-The section starts with a u32 source count (1–64). Six nonempty UTF-8 strings
-follow, each prefixed by a little-endian u16 byte length: repository, immutable
-revision, publisher, converter version, complete license text and copyright
-line. Each source then has a similarly encoded name followed by 32 SHA-256
-bytes. Sources must be sorted by unique name and the section must end exactly
-after the final digest; the total section cap is 1 MiB.
+The section starts with a u32 source count (1–64). Eight UTF-8 strings follow,
+each prefixed by a little-endian u16 byte length: repository, immutable
+revision, publisher, converter version, license identifier, complete license
+text, copyright line and full required notice text. Only `mit` and
+`apache-2.0` identifiers are accepted. The first six strings are nonempty; the
+last two may be empty where appropriate. An MIT license must contain the exact
+nonempty copyright line. Apache-2.0 license text need not itself contain an
+actual copyright line; any required upstream notice must be retained in the
+notice field. Each source then has a similarly encoded nonempty name followed
+by 32 SHA-256 bytes. Sources must be sorted by unique name and the section must
+end exactly after the final digest; the total section cap is 1 MiB.
 
-The checker compares each value to a separately trusted manifest, including
-the exact license and copyright line, and requires the license text to contain
-that line. A matching provenance section does not verify the source files or
-the origin of the trusted manifest. Conversion must separately verify source
-bytes, license evidence and metadata/NOTICE requirements.
+The checker compares each field to a separately trusted manifest. Matching a
+license identifier and trusted text does not itself verify the license terms,
+the presence or absence of a source notice, source bytes, or the origin of the
+trusted manifest. Conversion must independently verify that evidence and carry
+all required notices; this draft does not authorize a conversion or model load.
