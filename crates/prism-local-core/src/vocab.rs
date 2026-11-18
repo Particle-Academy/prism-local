@@ -152,4 +152,11 @@ mod tests {
         s.special[4].0 = 6;
         assert_eq!(check(&section(), &s), Err(InvalidVocab));
     }
+
+    #[test]
+    fn mutation_smoke_never_panics() {
+        crate::test_support::mutate(&section(), |input| {
+            let _ = check(input, &spec());
+        });
+    }
 }

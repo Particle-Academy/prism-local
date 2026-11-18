@@ -200,4 +200,11 @@ mod tests {
             Err(InvalidDirectory)
         );
     }
+
+    #[test]
+    fn mutation_smoke_never_panics() {
+        crate::test_support::mutate(&valid(), |input| {
+            let _ = check(input, 80, &schema());
+        });
+    }
 }

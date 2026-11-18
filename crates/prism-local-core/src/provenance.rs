@@ -158,4 +158,15 @@ mod tests {
         ];
         assert_eq!(check(&section(), &spec(&sources)), Err(InvalidProvenance));
     }
+
+    #[test]
+    fn mutation_smoke_never_panics() {
+        let sources = [Source {
+            name: "model.bin",
+            sha256: [7; 32],
+        }];
+        crate::test_support::mutate(&section(), |input| {
+            let _ = check(input, &spec(&sources));
+        });
+    }
 }

@@ -7,6 +7,8 @@ this is a fuzz-driver limit, not a model-file size limit. Build with
 `cargo build -p prism-local-fuzz --bins --locked`, then feed binaries from an
 independently provisioned fuzzing tool. The repository adds no third-party
 fuzzer dependency. This is a harness, not evidence that a fuzz campaign ran.
+Unit tests also apply deterministic bounded mutations to valid section seeds;
+those smoke checks do not measure coverage or demonstrate a fuzzing plateau.
 
 The current targets exercise framing, JSON, the draft PLM container, tensor
 directory, metadata, vocabulary and provenance sections with small trusted test schemas. Additional

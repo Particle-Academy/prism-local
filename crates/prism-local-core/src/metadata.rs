@@ -106,4 +106,12 @@ mod tests {
         invalid.layer_norm_epsilon_bits = f32::NAN.to_bits();
         assert_eq!(check_bert(&bytes(invalid), invalid), Err(InvalidMetadata));
     }
+
+    #[test]
+    fn mutation_smoke_never_panics() {
+        let spec = expected();
+        crate::test_support::mutate(&bytes(spec), |input| {
+            let _ = check_bert(input, spec);
+        });
+    }
 }
