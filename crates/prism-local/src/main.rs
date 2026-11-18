@@ -2,6 +2,7 @@
 
 mod deadline;
 mod rpc;
+mod rpc_response;
 
 use prism_local_core::{
     frame::{read_frame_budgeted, write_frame, HARD_MAX_FRAME},
@@ -47,10 +48,15 @@ fn main() -> io::Result<()> {
         let mut arena_buffers = request_buffers
             .split(2 * 1024 * 1024)
             .map_err(|_| io::Error::other("invalid JSON arena budget"))?;
-        let (response, stop) = server.handle_budgeted(frame.as_slice(), &mut arena_buffers);
+        let mut response_buffers = request_buffers
+            .split(1024 * 1024)
+            .map_err(|_| io::Error::other("invalid response budget"))?;
+        let (response, stop) = server
+            .handle_budgeted(frame.as_slice(), &mut arena_buffers, &mut response_buffers)
+            .map_err(|_| io::Error::other("response budget or allocation unavailable"))?;
         refuse_expired(expires);
         if let Some(response) = response {
-            write_frame(&mut output, &response, HARD_MAX_FRAME)?;
+            write_frame(&mut output, response.as_slice(), HARD_MAX_FRAME)?;
             output.flush()?;
         }
         refuse_expired(expires);

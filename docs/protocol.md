@@ -37,10 +37,11 @@ all sidecar allocations or evidence that a request or process cap exists.
 The sidecar reads each frame into a preplanned fixed byte buffer and refuses it
 if that buffer's capacity exceeds 1 MiB. It parses JSON into a separate arena
 whose node and decoded-text buffer capacities together are capped at 2 MiB.
-Those two buffers use disjoint portions of one 4 MiB request payload plan.
+Responses use a fixed buffer capped at 1 MiB. These three allocations use
+disjoint portions of one 4 MiB request payload plan.
 The reader also exposes an admission callback after validating the declared
-length and before allocation. These fixed limits are not a complete request
-memory budget: responses, allocator overhead and stacks are not included.
+length and before allocation. These fixed limits are not an operating-system
+RSS limit: allocator overhead, runtime and stack memory are not included.
 See [request memory budgeting](request-memory-budget.md) for the remaining
 accounting and validation work.
 

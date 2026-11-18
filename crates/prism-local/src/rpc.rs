@@ -1,9 +1,9 @@
 //! Sequential JSON-RPC skeleton. No model, worker pool or inference exists yet.
 
+use crate::rpc_response::{encode, valid_id_number, EncodeError, ErrorCode, Id, Response, Success};
 use prism_local_core::{
-    json::{string_output_len, write_string},
     json_arena::{self, Arena, Kind},
-    memory_plan::RequestBuffers,
+    memory_plan::{Buffer, RequestBuffers},
 };
 use std::time::Duration;
 
@@ -14,6 +14,7 @@ pub struct Server {
     settings: Option<Settings>,
 }
 
+#[derive(Clone, Copy)]
 struct Settings {
     threads: usize,
     deadline_ms: usize,
@@ -26,17 +27,33 @@ impl Server {
 
     #[cfg(test)]
     fn handle(&mut self, frame: &[u8]) -> (Option<Vec<u8>>, bool) {
-        let plan = prism_local_core::memory_plan::checked_plan(
-            2,
-            0,
-            &[prism_local_core::memory_plan::Allocation {
-                count: 2 * 1024 * 1024,
-                element_bytes: 1,
-            }],
-        )
-        .unwrap();
-        let mut buffers = RequestBuffers::new(plan);
-        self.handle_budgeted(frame, &mut buffers)
+        use prism_local_core::memory_plan::{checked_plan, Allocation};
+        let mut arena = RequestBuffers::new(
+            checked_plan(
+                2,
+                0,
+                &[Allocation {
+                    count: 2 * 1024 * 1024,
+                    element_bytes: 1,
+                }],
+            )
+            .unwrap(),
+        );
+        let mut response = RequestBuffers::new(
+            checked_plan(
+                1,
+                0,
+                &[Allocation {
+                    count: 1024 * 1024,
+                    element_bytes: 1,
+                }],
+            )
+            .unwrap(),
+        );
+        let (value, stop) = self
+            .handle_budgeted(frame, &mut arena, &mut response)
+            .unwrap();
+        (value.map(|buffer| buffer.as_slice().to_vec()), stop)
     }
 
     pub fn timeout(&self) -> Duration {
@@ -47,40 +64,35 @@ impl Server {
         Duration::from_millis(millis as u64)
     }
 
+    /// On response-allocation failure the caller must terminate the stream.
     pub fn handle_budgeted(
         &mut self,
         frame: &[u8],
         buffers: &mut RequestBuffers,
-    ) -> (Option<Vec<u8>>, bool) {
+        responses: &mut RequestBuffers,
+    ) -> Result<(Option<Buffer<u8>>, bool), EncodeError> {
         let arena = match json_arena::parse(frame, buffers) {
             Ok(value) => value,
-            Err(json_arena::Error::Invalid) => {
-                return (Some(error("null", -32700, "Parse error")), false)
-            }
-            Err(json_arena::Error::Resource) => {
-                return (
-                    Some(error("null", -32001, "Request memory unavailable")),
-                    false,
-                )
-            }
+            Err(json_arena::Error::Invalid) => return failure(responses, ErrorCode::Parse),
+            Err(json_arena::Error::Resource) => return failure(responses, ErrorCode::Resource),
         };
         let root = arena.root();
         if arena.kind(root) != Some(Kind::Object) {
-            return (Some(error("null", -32600, "Invalid Request")), false);
+            return failure(responses, ErrorCode::InvalidRequest);
         }
         let id = match arena.get(root, "id") {
             None => None,
             Some(index) => match arena.kind(index) {
-                Some(Kind::Null) => Some("null".to_owned()),
+                Some(Kind::Null) => Some(Id::Null),
                 Some(Kind::String) => match arena.string(index) {
-                    Some(value) => Some(quote(value)),
-                    None => return (Some(error("null", -32600, "Invalid Request")), false),
+                    Some(value) => Some(Id::String(value)),
+                    None => return failure(responses, ErrorCode::InvalidRequest),
                 },
                 Some(Kind::Number) => match arena.number(index) {
-                    Some(value) if valid_id_number(value) => Some(value.to_owned()),
-                    _ => return (Some(error("null", -32600, "Invalid Request")), false),
+                    Some(value) if valid_id_number(value) => Some(Id::Number(value)),
+                    _ => return failure(responses, ErrorCode::InvalidRequest),
                 },
-                _ => return (Some(error("null", -32600, "Invalid Request")), false),
+                _ => return failure(responses, ErrorCode::InvalidRequest),
             },
         };
         if arena
@@ -88,47 +100,58 @@ impl Server {
             .and_then(|index| arena.string(index))
             != Some("2.0")
         {
-            return (Some(error("null", -32600, "Invalid Request")), false);
+            return failure(responses, ErrorCode::InvalidRequest);
         }
         let method = match arena
             .get(root, "method")
             .and_then(|index| arena.string(index))
         {
             Some(value) => value,
-            _ => return (Some(error("null", -32600, "Invalid Request")), false),
+            None => return failure(responses, ErrorCode::InvalidRequest),
         };
         let params = match arena.get(root, "params") {
             None => None,
             Some(index) if arena.kind(index) == Some(Kind::Object) => Some(index),
-            Some(_) => return (id.map(|id| error(&id, -32602, "Invalid params")), false),
+            Some(_) => return respond_error(responses, id, ErrorCode::InvalidParams),
         };
+        let mut pending = None;
         let (result, stop) = match method {
             "hello" => match self.hello(&arena, params) {
-                Some(s) => (Ok(s), false),
-                None => (Err((-32602, "Invalid params")), false),
+                Some(settings) => {
+                    pending = Some(settings);
+                    (Ok(settings.result()), false)
+                }
+                None => (Err(ErrorCode::InvalidParams), false),
             },
             "stats" if params.is_none_or(|index| arena.first_child(index).is_none()) => {
                 match &self.settings {
-                    Some(s) => (Ok(settings_result(s)), false),
-                    None => (Err((-32000, "Call hello first")), false),
+                    Some(settings) => (Ok(settings.result()), false),
+                    None => (Err(ErrorCode::HelloRequired), false),
                 }
             }
             "shutdown" if params.is_none_or(|index| arena.first_child(index).is_none()) => {
-                (Ok("null".into()), true)
+                (Ok(Success::Null), true)
             }
-            "stats" | "shutdown" => (Err((-32602, "Invalid params")), false),
-            _ => (Err((-32601, "Method not found")), false),
+            "stats" | "shutdown" => (Err(ErrorCode::InvalidParams), false),
+            _ => (Err(ErrorCode::MethodNotFound), false),
         };
-        let response = id.map(|id| match result {
-            Ok(result) => {
-                format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{result}}}").into_bytes()
-            }
-            Err((code, message)) => error(&id, code, message),
-        });
-        (response, stop)
+        let response = match id {
+            Some(id) => Some(encode(
+                match result {
+                    Ok(result) => Response::Success { id, result },
+                    Err(code) => Response::Error { id, code },
+                },
+                responses,
+            )?),
+            None => None,
+        };
+        if let Some(settings) = pending {
+            self.settings = Some(settings);
+        }
+        Ok((response, stop))
     }
 
-    fn hello(&mut self, arena: &Arena<'_>, params: Option<usize>) -> Option<String> {
+    fn hello(&self, arena: &Arena<'_>, params: Option<usize>) -> Option<Settings> {
         if self.settings.is_some() {
             return None;
         }
@@ -145,13 +168,10 @@ impl Server {
         if threads > cores || !(100..=300_000).contains(&deadline_ms) {
             return None;
         }
-        let settings = Settings {
+        Some(Settings {
             threads,
             deadline_ms,
-        };
-        let result = settings_result(&settings);
-        self.settings = Some(settings);
-        Some(result)
+        })
     }
 }
 
@@ -168,47 +188,52 @@ fn option_positive(
             .filter(|&v| v > 0),
     }
 }
+
 fn integer(s: &str) -> Option<u64> {
     if !s.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     s.parse().ok()
 }
-fn valid_id_number(s: &str) -> bool {
-    if s.starts_with('-') {
-        s.parse::<i64>().is_ok()
-    } else {
-        integer(s).is_some()
+
+impl Settings {
+    fn result(&self) -> Success {
+        Success::Settings {
+            threads: self.threads,
+            deadline_ms: self.deadline_ms,
+        }
     }
 }
-fn settings_result(s: &Settings) -> String {
-    format!(
-        "{{\"threads\":{},\"deadlineMs\":{},\"inferenceAvailable\":false}}",
-        s.threads, s.deadline_ms
-    )
+
+fn failure(
+    buffers: &mut RequestBuffers,
+    code: ErrorCode,
+) -> Result<(Option<Buffer<u8>>, bool), EncodeError> {
+    respond_error(buffers, Some(Id::Null), code)
 }
-fn error(id: &str, code: i32, message: &str) -> Vec<u8> {
-    format!(
-        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":{code},\"message\":{}}}}}",
-        quote(message)
-    )
-    .into_bytes()
-}
-fn quote(s: &str) -> String {
-    let length = string_output_len(s).expect("bounded JSON string");
-    let mut out = vec![0; length];
-    write_string(s, &mut out).expect("exact JSON string buffer");
-    String::from_utf8(out).expect("JSON string is valid UTF-8")
+
+fn respond_error(
+    buffers: &mut RequestBuffers,
+    id: Option<Id<'_>>,
+    code: ErrorCode,
+) -> Result<(Option<Buffer<u8>>, bool), EncodeError> {
+    let response = match id {
+        Some(id) => Some(encode(Response::Error { id, code }, buffers)?),
+        None => None,
+    };
+    Ok((response, false))
 }
 
 #[cfg(test)]
 mod tests {
     use super::Server;
     use prism_local_core::json::{parse, Value};
-    use prism_local_core::memory_plan::{checked_plan, RequestBuffers};
+    use prism_local_core::memory_plan::{checked_plan, Allocation, RequestBuffers};
+
     fn text(b: Option<Vec<u8>>) -> String {
         String::from_utf8(b.unwrap()).unwrap()
     }
+
     #[test]
     fn hello_stats_and_shutdown_are_serial_and_notifications_are_silent() {
         let mut s = Server::new();
@@ -227,6 +252,7 @@ mod tests {
         assert!(reply.is_none());
         assert!(stop);
     }
+
     #[test]
     fn rejects_ambiguous_json_and_unsafe_or_invalid_settings() {
         let mut s = Server::new();
@@ -257,14 +283,130 @@ mod tests {
     #[test]
     fn arena_refusal_does_not_apply_settings() {
         let mut server = Server::new();
-        let plan = checked_plan(1, 0, &[]).unwrap();
-        let mut buffers = RequestBuffers::new(plan);
+        let mut buffers = RequestBuffers::new(checked_plan(1, 0, &[]).unwrap());
+        let mut responses = RequestBuffers::new(
+            checked_plan(
+                1,
+                0,
+                &[Allocation {
+                    count: 1024,
+                    element_bytes: 1,
+                }],
+            )
+            .unwrap(),
+        );
         let request = br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"threads":1}}"#;
-        let (reply, stop) = server.handle_budgeted(request, &mut buffers);
+        let (reply, stop) = server
+            .handle_budgeted(request, &mut buffers, &mut responses)
+            .unwrap();
         assert!(!stop);
-        assert!(text(reply).contains("-32001"));
+        assert!(std::str::from_utf8(reply.unwrap().as_slice())
+            .unwrap()
+            .contains("-32001"));
         let (reply, stop) = server.handle(request);
         assert!(!stop);
         assert!(text(reply).contains("\"inferenceAvailable\":false"));
+    }
+
+    #[test]
+    fn response_refusal_does_not_apply_settings() {
+        let mut server = Server::new();
+        let mut buffers = RequestBuffers::new(
+            checked_plan(
+                1,
+                0,
+                &[Allocation {
+                    count: 4096,
+                    element_bytes: 1,
+                }],
+            )
+            .unwrap(),
+        );
+        let mut responses = RequestBuffers::new(checked_plan(1, 0, &[]).unwrap());
+        let request = br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"threads":1}}"#;
+        assert!(server
+            .handle_budgeted(request, &mut buffers, &mut responses)
+            .is_err());
+        assert!(text(server.handle(request).0).contains("\"inferenceAvailable\":false"));
+    }
+
+    #[test]
+    fn notification_does_not_need_response_storage() {
+        let mut server = Server::new();
+        let mut buffers = RequestBuffers::new(
+            checked_plan(
+                1,
+                0,
+                &[Allocation {
+                    count: 4096,
+                    element_bytes: 1,
+                }],
+            )
+            .unwrap(),
+        );
+        let mut responses = RequestBuffers::new(checked_plan(1, 0, &[]).unwrap());
+        let request = br#"{"jsonrpc":"2.0","method":"hello","params":{"threads":1}}"#;
+        let (reply, stop) = server
+            .handle_budgeted(request, &mut buffers, &mut responses)
+            .unwrap();
+        assert!(reply.is_none());
+        assert!(!stop);
+        assert!(text(
+            server
+                .handle(br#"{"jsonrpc":"2.0","id":1,"method":"stats"}"#)
+                .0
+        )
+        .contains("\"inferenceAvailable\":false"));
+    }
+
+    #[test]
+    fn bounded_mutations_produce_valid_responses_or_notifications() {
+        let seeds: &[&[u8]] = &[
+            br#"{"jsonrpc":"2.0","id":"\u0000\n\"","method":"hello","params":{"threads":1}}"#,
+            br#"{"jsonrpc":"2.0","id":-9223372036854775808,"method":"stats"}"#,
+            br#"{"jsonrpc":"2.0","method":"shutdown"}"#,
+        ];
+        let mut state = 0xa54f_f53a_u32;
+        for iteration in 0..4096 {
+            let mut request = seeds[iteration % seeds.len()].to_vec();
+            for _ in 0..4 {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let index = state as usize % request.len();
+                request[index] ^= (state >> 24) as u8;
+            }
+            if iteration % 8 == 0 {
+                request.truncate(state as usize % request.len());
+            }
+            let mut arena = RequestBuffers::new(
+                checked_plan(
+                    2,
+                    0,
+                    &[Allocation {
+                        count: 2 * 1024 * 1024,
+                        element_bytes: 1,
+                    }],
+                )
+                .unwrap(),
+            );
+            let mut output = RequestBuffers::new(
+                checked_plan(
+                    1,
+                    0,
+                    &[Allocation {
+                        count: 1024 * 1024,
+                        element_bytes: 1,
+                    }],
+                )
+                .unwrap(),
+            );
+            let result = Server::new().handle_budgeted(&request, &mut arena, &mut output);
+            assert!(result.is_ok());
+            let (response, _) = result.unwrap();
+            if let Some(response) = response {
+                assert!(parse(response.as_slice()).is_ok());
+            }
+        }
     }
 }
