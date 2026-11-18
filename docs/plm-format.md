@@ -37,7 +37,8 @@ data. Each section is nonempty, 64-byte aligned, fully inside the file and
 disjoint from every other section, the header and the section table. Reject
 unknown types, duplicate or missing types, overflows, gaps inside the table,
 nonzero reserved fields, truncation and lengths that do not match the file.
-Unused bytes between sections have no semantics and are not parsed.
+All bytes outside the header, section table and sections are padding and must
+be zero, including gaps and any file trailer.
 
 The envelope parser never allocates in proportion to attacker-provided counts
 and uses checked arithmetic and checked integer conversions. Structural success

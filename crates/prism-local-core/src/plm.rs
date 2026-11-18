@@ -109,6 +109,23 @@ fn validate(bytes: &[u8]) -> Option<[(usize, usize); SECTIONS]> {
             return None;
         }
     }
+    // Every byte outside the header, table and sections is canonical zero
+    // padding, including gaps and the file trailer.
+    let mut occupied = [(0_usize, 0_usize); SECTIONS + 2];
+    occupied[0] = (0, HEADER_LEN);
+    occupied[1] = (table_start, table_end);
+    occupied[2..].copy_from_slice(&ranges);
+    occupied.sort_unstable();
+    let mut next = 0;
+    for (start, end) in occupied {
+        if bytes.get(next..start)?.iter().any(|&byte| byte != 0) {
+            return None;
+        }
+        next = end;
+    }
+    if bytes.get(next..)?.iter().any(|&byte| byte != 0) {
+        return None;
+    }
     Some(ranges)
 }
 
@@ -248,6 +265,15 @@ mod tests {
                 b[index] ^= (state >> 24) as u8;
             }
             let _ = check(&b);
+        }
+    }
+
+    #[test]
+    fn rejects_nonzero_padding_before_between_and_after_sections() {
+        for index in [224, 257, 575] {
+            let mut b = valid();
+            b[index] = 1;
+            assert_eq!(check(&b), Err(Error::InvalidEnvelope), "index {index}");
         }
     }
 }

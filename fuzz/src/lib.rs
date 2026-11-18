@@ -164,6 +164,7 @@ mod tests {
             include_bytes!("../corpus/plm/overflowing-count").as_slice(),
             include_bytes!("../corpus/plm/overflowing-offset").as_slice(),
             include_bytes!("../corpus/plm/overlapping-sections").as_slice(),
+            include_bytes!("../corpus/plm/nonzero-padding").as_slice(),
         ] {
             assert!(plm::check_envelope(bytes, &sha256::digest(bytes).unwrap()).is_err());
         }
