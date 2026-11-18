@@ -6,6 +6,7 @@ pub mod frame;
 pub mod golden;
 pub mod json;
 pub mod math;
+pub mod memory_plan;
 pub mod metadata;
 pub mod model_checks;
 pub mod plm;
