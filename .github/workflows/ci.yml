@@ -55,8 +55,36 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  linux-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain and musl target
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal
+          rustup target add --toolchain 1.100.0 x86_64-unknown-linux-musl
+      - name: Test musl release
+        run: cargo test --workspace --target x86_64-unknown-linux-musl --release --locked --offline
+      - name: Build sidecar and check static linkage
+        run: |
+          cargo build -p prism-local --target x86_64-unknown-linux-musl --release --locked --offline
+          readelf -l target/x86_64-unknown-linux-musl/release/prism-local > target/musl-headers.txt
+          if grep -q INTERP target/musl-headers.txt; then echo 'Unexpected ELF interpreter'; exit 1; fi
+          readelf -d target/x86_64-unknown-linux-musl/release/prism-local > target/musl-dynamic.txt
+          if grep -q '(NEEDED)' target/musl-dynamic.txt; then echo 'Unexpected shared library'; exit 1; fi
+      - name: Produce musl fixture bytes
+        run: cargo run --target x86_64-unknown-linux-musl --release --locked --offline -p prism-local-core --bin foundation-golden -- foundation-musl.bin
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: foundation-Musl
+          path: foundation-musl.bin
+          if-no-files-found: error
+          retention-days: 7
+
   compare-foundation-bytes:
-    needs: checks
+    needs: [checks, linux-musl]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -69,3 +97,4 @@ jobs:
           cmp fixtures/foundation-Windows/foundation-release.bin fixtures/foundation-Linux/foundation-release.bin
           cmp fixtures/foundation-Windows/foundation-debug.bin fixtures/foundation-Windows/foundation-release.bin
           cmp fixtures/foundation-Linux/foundation-debug.bin fixtures/foundation-Linux/foundation-release.bin
+          cmp fixtures/foundation-Linux/foundation-release.bin fixtures/foundation-Musl/foundation-musl.bin
