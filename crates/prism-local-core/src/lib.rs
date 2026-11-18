@@ -8,3 +8,4 @@ pub mod json;
 pub mod math;
 pub mod plm;
 pub mod sha256;
+pub mod tensors;

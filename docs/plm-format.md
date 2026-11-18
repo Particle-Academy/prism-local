@@ -36,3 +36,19 @@ and uses checked arithmetic and checked integer conversions. Structural success
 is not validation of any section. Until each section and its relationships are
 validated, no caller may load or use weights, token IDs, metadata or template
 content for inference. The format may change while those rules are developed.
+
+## Draft tensor directory
+
+The directory checker accepts a trusted, code-defined architecture schema;
+schema selection from model metadata is not implemented. It requires exactly
+one 40-byte record for each schema tensor, sorted by strictly increasing u32
+tensor ID. A record consists of u32 ID, u8 dtype (1 = i8, 2 = f16, 3 = f32),
+u8 rank (1–4), two zero bytes, four u32 dimensions (nonzero within rank and
+zero afterward), u64 data-section-relative offset, and u64 byte length. All
+dimensions and dtypes must exactly equal the trusted schema. Offsets are
+64-byte aligned. Checked shape products multiplied by dtype size must equal the
+length; the range must fit the data section and not overlap any other tensor.
+The checker accepts at most 1,024 tensors and rejects duplicates or omissions.
+
+This draft does not define the BGE tensor schema, quantization scale layout,
+or payload validation. A directory passing these checks is not a loadable model.
