@@ -165,6 +165,7 @@ mod platform {
         fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
         fn GetCurrentProcess() -> Handle;
         fn CloseHandle(handle: Handle) -> i32;
+        fn TerminateProcess(process: Handle, code: u32) -> i32;
         fn ExitProcess(code: u32) -> !;
     }
     pub struct Guard(Handle);
@@ -217,8 +218,13 @@ mod platform {
         Ok(guard)
     }
     pub fn exit_memory() -> ! {
-        // SAFETY: ExitProcess terminates immediately and does not return.
-        unsafe { ExitProcess(MEMORY_EXIT as u32) }
+        // SAFETY: GetCurrentProcess returns a valid pseudo-handle. Terminating
+        // ourselves avoids DLL-detach deadlocks with the watchdog thread. If
+        // the system unexpectedly rejects it, ExitProcess is the last resort.
+        unsafe {
+            TerminateProcess(GetCurrentProcess(), MEMORY_EXIT as u32);
+            ExitProcess(MEMORY_EXIT as u32)
+        }
     }
 }
 
