@@ -1,0 +1,61 @@
+name: Foundations
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        run: rustup toolchain install 1.100.0 --profile minimal --component rustfmt --component clippy
+      - name: Check the lockfile has no external crates
+        shell: pwsh
+        run: |
+          if (Select-String -Path Cargo.lock -Pattern '^source\s*=') {
+            throw 'Cargo.lock contains an external package source'
+          }
+      - name: Reject direct std::net imports
+        shell: pwsh
+        run: |
+          $networkReferences = Get-ChildItem crates -Recurse -Filter *.rs | Select-String -Pattern '\bstd\s*::\s*net\b'
+          if ($networkReferences) { throw 'Direct std::net reference found in engine code' }
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Build
+        run: cargo build --workspace --all-targets --locked --offline
+      - name: Test
+        run: cargo test --workspace --locked --offline
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+      - name: Produce foundation fixture bytes
+        run: cargo run --locked --offline -p prism-local-core --bin foundation-golden -- foundation-golden.bin
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: foundation-${{ runner.os }}
+          path: foundation-golden.bin
+          if-no-files-found: error
+          retention-days: 7
+
+  compare-foundation-bytes:
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: foundation-*
+          path: fixtures
+      - name: Compare Windows and Linux bytes
+        run: cmp fixtures/foundation-Windows/foundation-golden.bin fixtures/foundation-Linux/foundation-golden.bin

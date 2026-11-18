@@ -1,0 +1,14 @@
+[workspace]
+members = ["crates/prism-local-core", "crates/prism-local", "fuzz"]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+strip = true
