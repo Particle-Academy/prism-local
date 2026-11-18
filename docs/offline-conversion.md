@@ -14,10 +14,15 @@ every input (including configuration, tokenizer, weights, license and any
 notice), source file sizes, converter source revision and toolchain, and
 conversion recipe. Verify these before conversion. Re-check the pinned
 revision's actual license file at conversion where present, accepting only
-MIT or Apache-2.0. Where a model card points to an upstream license instead,
-require an explicitly reviewed immutable source and digest for that text,
-plus evidence that it applies to the model; otherwise refuse conversion.
-Retain required license and notices with the converted artifact. Reject
+MIT or Apache-2.0. For a model whose repository has no license file, conversion
+is refused unless the manifest records all three: (1) the license field from
+the model card at the pinned model revision; (2) the linked license text at a
+commit that existed no later than the model's release, with its Git blob SHA
+and SHA-256; and (3) the exact copyright line from that license in the project
+NOTICE and the converted model's metadata. Model publisher is a separate field.
+The converter must independently verify these records and the bytes at
+conversion, and refuse any missing or mismatched item. Retain the full license
+text and all required notices with the converted artifact. Reject
 unrecognised architectures, parameters, tensor names, shapes and dtypes.
 The decider model selection is deferred until embedding measurements are
 available. Each architecture requires its own explicit conversion and
@@ -35,12 +40,19 @@ The pinned model card declares MIT and links the FlagEmbedding MIT license,
 but the pinned model repository's root listing has no separate LICENSE file.
 The linked GitHub `master` URL is mutable. Its license-file history identifies
 the introduction at FlagOpen/FlagEmbedding commit
-`c086741f5e117b7b8ce1745ea00b6c262f281a01`; that version contains MIT text and
-the copyright notice. Its 1,065 downloaded bytes hashed to SHA-256
+`c086741f5e117b7b8ce1745ea00b6c262f281a01`, dated 2023-08-03, precedes the
+model repository's first upload on 2023-09-12. The license's Git blob SHA-1 is
+`360931513aa6c02f933a403202afa99ac2c5bc88` and its 1,065 downloaded bytes
+hashed to SHA-256
 `587a673933425dbc36ec61268d3b954051b2d3ef3c9b322ede357976055ffdd5`.
 The pinned model card declares MIT and links that upstream license path, but
 conversion must verify all evidence and input bytes again. Do not silently
 treat a license tag as a complete redistribution notice.
+
+The proposed values live in `models/bge-small-en-v1.5.toml`. That file is an
+incomplete evidence manifest: the converter, source-weight verification and
+metadata/NOTICE enforcement do not exist yet and it does not authorize a model
+conversion or distribution.
 
 Evidence: [pinned model card](https://huggingface.co/BAAI/bge-small-en-v1.5/blob/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/README.md),
 [pinned source weights](https://huggingface.co/BAAI/bge-small-en-v1.5/blob/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/model.safetensors),

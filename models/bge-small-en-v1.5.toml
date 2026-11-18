@@ -1,0 +1,24 @@
+# Evidence only. No converter, complete source manifest, or PLM exists yet.
+status = "incomplete"
+model_repository = "BAAI/bge-small-en-v1.5"
+model_publisher = "BAAI"
+model_revision = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+model_first_upload_date = "2023-09-12"
+model_history_url = "https://huggingface.co/BAAI/bge-small-en-v1.5/commits/main"
+model_card_path = "README.md"
+model_card_sha256 = "ddb964361a55c6e5dfca6361615854b260c9c960205d04c7520151aaa1d75837"
+model_card_git_blob_sha1 = "8b8567d75ffa619486d9590cb0eb76d66ad46c49"
+model_card_license = "mit"
+
+# Source-host metadata only: the actual model bytes are not locally verified.
+weights_path = "model.safetensors"
+weights_sha256_reported = "3c9f31665447c8911517620762200d2245a2518d6e7208acc78cd9db317e21ad"
+weights_locally_verified = false
+
+license_url = "https://github.com/FlagOpen/FlagEmbedding/blob/c086741f5e117b7b8ce1745ea00b6c262f281a01/LICENSE"
+license_commit = "c086741f5e117b7b8ce1745ea00b6c262f281a01"
+license_commit_date = "2023-08-03"
+license_git_blob_sha1 = "360931513aa6c02f933a403202afa99ac2c5bc88"
+license_sha256 = "587a673933425dbc36ec61268d3b954051b2d3ef3c9b322ede357976055ffdd5"
+license_size_bytes = 1065
+copyright_line = "Copyright (c) 2022 staoxiao"
