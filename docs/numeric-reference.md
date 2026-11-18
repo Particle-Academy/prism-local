@@ -40,3 +40,9 @@ generation. The current CI compares math output bytes for all 1,264 fixture
 inputs, plus signed zero and the smallest normal inputs, between its Windows
 and Linux debug and release builds. This does not establish identical
 results for every CPU, ISA, thread count, floating-point environment or input.
+
+The foundation fixture also computes six small integer row dots with one worker
+and with up to six workers, capped by the runner's available parallelism. Each
+row is accumulated in a single fixed sequence; worker results are compared and
+included in the cross-OS fixture. A one-core runner exercises only one worker.
+This tests the experimental row primitive, not an inference scheduler or model.

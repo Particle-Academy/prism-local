@@ -6,5 +6,7 @@ fn main() -> std::io::Result<()> {
     if args.next().is_some() {
         return Err(std::io::Error::other("expected exactly one output path"));
     }
-    std::fs::write(path, prism_local_core::golden::bytes())
+    let (bytes, workers) = prism_local_core::golden::fixture();
+    eprintln!("Row-dot fixture checked one worker and {workers} worker(s).");
+    std::fs::write(path, bytes)
 }

@@ -13,6 +13,75 @@ pub fn dot_i8(left: &[i8], right: &[i8]) -> Option<i64> {
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum RowDotError {
+    InvalidShape,
+    InvalidThreads,
+    Allocation,
+    Worker,
+    Overflow,
+}
+
+/// Experimental row-parallel dot products, with no cross-worker reductions.
+///
+/// Each row is accumulated sequentially with `dot_i8`. This call's threads
+/// cannot exceed available parallelism, but concurrent calls have no shared
+/// worker cap. It allocates an output vector without request budgeting and is
+/// not an inference or resource-enforcement interface.
+pub fn dot_rows_i8(matrix: &[i8], input: &[i8], threads: usize) -> Result<Vec<i64>, RowDotError> {
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    if threads == 0 || threads > cores {
+        return Err(RowDotError::InvalidThreads);
+    }
+    if input.is_empty() || matrix.is_empty() || !matrix.len().is_multiple_of(input.len()) {
+        return Err(RowDotError::InvalidShape);
+    }
+    let rows = matrix.len() / input.len();
+    let workers = threads.min(rows);
+    let rows_per_worker = rows.div_ceil(workers);
+    let bytes_per_worker = rows_per_worker
+        .checked_mul(input.len())
+        .ok_or(RowDotError::Overflow)?;
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(rows)
+        .map_err(|_| RowDotError::Allocation)?;
+    output.resize(rows, 0);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        handles
+            .try_reserve_exact(workers)
+            .map_err(|_| RowDotError::Allocation)?;
+        let mut error = None;
+        for (out, source) in output
+            .chunks_mut(rows_per_worker)
+            .zip(matrix.chunks(bytes_per_worker))
+        {
+            match std::thread::Builder::new().spawn_scoped(scope, move || {
+                for (slot, row) in out.iter_mut().zip(source.chunks_exact(input.len())) {
+                    *slot = dot_i8(row, input).ok_or(RowDotError::Overflow)?;
+                }
+                Ok(())
+            }) {
+                Ok(handle) => handles.push(handle),
+                Err(_) => {
+                    error = Some(RowDotError::Worker);
+                    break;
+                }
+            }
+        }
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(failure)) => error = Some(failure),
+                Err(_) => error = Some(RowDotError::Worker),
+            }
+        }
+        error.map_or(Ok(()), Err)
+    })?;
+    Ok(output)
+}
+
 /// Scalar approximation for finite, normal inputs in [-80, 80], plus zero.
 /// This is an experimental foundation; inference and cross-CPU equivalence
 /// require separate quality and floating-point-environment checks.
@@ -90,7 +159,7 @@ fn supported(x: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{dot_i8, erf_f32, exp_f32, tanh_f32};
+    use super::{dot_i8, dot_rows_i8, erf_f32, exp_f32, tanh_f32, RowDotError};
 
     #[test]
     fn signed_extremes_and_empty_vectors() {
@@ -103,6 +172,44 @@ mod tests {
     fn does_not_saturate_intermediate_results() {
         let v = vec![-128; 200_000];
         assert_eq!(dot_i8(&v, &v), Some(3_276_800_000));
+    }
+
+    #[test]
+    fn row_dot_products_keep_exact_results_across_worker_counts() {
+        let input = [-128_i8, 127, 17, -9, 0];
+        let matrix = [
+            -128, 127, -128, 127, 127, 0, 0, 0, 0, 0, 127, -128, 17, 9, -1, 1, 2, 3, 4, 5, -1, -2,
+            -3, -4, -5, 4, 3, 2, 1, 0,
+        ];
+        let expected: Vec<_> = matrix
+            .chunks_exact(input.len())
+            .map(|row| dot_i8(row, &input).unwrap())
+            .collect();
+        let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        for workers in 1..=cores.min(6) {
+            assert_eq!(dot_rows_i8(&matrix, &input, workers), Ok(expected.clone()));
+        }
+        let long_input = vec![-128_i8; 200_000];
+        let long_matrix = vec![-128_i8; 400_000];
+        for workers in 1..=cores.min(2) {
+            assert_eq!(
+                dot_rows_i8(&long_matrix, &long_input, workers),
+                Ok(vec![3_276_800_000, 3_276_800_000])
+            );
+        }
+        assert_eq!(
+            dot_rows_i8(&matrix, &input, 0),
+            Err(RowDotError::InvalidThreads)
+        );
+        assert_eq!(
+            dot_rows_i8(&matrix, &input, cores.saturating_add(1)),
+            Err(RowDotError::InvalidThreads)
+        );
+        assert_eq!(
+            dot_rows_i8(&matrix[..29], &input, 1),
+            Err(RowDotError::InvalidShape)
+        );
+        assert_eq!(dot_rows_i8(&matrix, &[], 1), Err(RowDotError::InvalidShape));
     }
 
     #[test]
