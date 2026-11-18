@@ -1,4 +1,4 @@
-use prism_local_core::tensors::{check, Dtype, TensorSpec};
+use prism_local_core::tensors::{check, check_values, Dtype, TensorSpec, ValueRule};
 
 fn main() -> std::io::Result<()> {
     let specs = [
@@ -15,6 +15,14 @@ fn main() -> std::io::Result<()> {
     ];
     if let Some(bytes) = prism_local_fuzz::input()? {
         let _ = check(&bytes, 1024, &specs);
+        if let Some((directory, data)) = bytes.split_at_checked(80) {
+            let _ = check_values(
+                directory,
+                data,
+                &specs,
+                &[ValueRule::AnyI8, ValueRule::FiniteNormalOrZero],
+            );
+        }
     }
     Ok(())
 }

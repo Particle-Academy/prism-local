@@ -1,7 +1,7 @@
-//! Draft tensor-directory checks against a trusted architecture schema.
+//! Draft tensor checks against a trusted architecture schema.
 //!
-//! This checks directory structure only. It does not validate tensor payloads,
-//! quantization scales, metadata, tokenizer, provenance or an entire model.
+//! Directory and value checks are separate. Neither validates quantization
+//! relationships, metadata, tokenizer, provenance or an entire model.
 
 const ENTRY: usize = 40;
 const MAX_TENSORS: usize = 1024;
@@ -40,6 +40,14 @@ pub struct TensorSpec {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct InvalidDirectory;
+
+/// A trusted rule for the corresponding tensor's payload.
+#[derive(Clone, Copy)]
+pub enum ValueRule {
+    AnyI8,
+    FiniteNormalOrZero,
+    PositiveNormal,
+}
 
 /// Check exact IDs, types, shapes, lengths, alignment and non-overlap.
 /// `data_len` is the independently validated tensor-data section length.
@@ -104,9 +112,82 @@ pub fn check(
     Ok(())
 }
 
+/// Validate payload values after directory validation, using trusted rules.
+/// Float subnormals and nonfinite values are refused; positive scale-like
+/// values must additionally be nonzero and positive. This is not sufficient
+/// to establish quantization correctness or complete model validity.
+pub fn check_values(
+    directory: &[u8],
+    data: &[u8],
+    specs: &[TensorSpec],
+    rules: &[ValueRule],
+) -> Result<(), InvalidDirectory> {
+    if rules.len() != specs.len() {
+        return Err(InvalidDirectory);
+    }
+    check(
+        directory,
+        u64::try_from(data.len()).map_err(|_| InvalidDirectory)?,
+        specs,
+    )?;
+    for ((record, spec), rule) in directory
+        .as_chunks::<ENTRY>()
+        .0
+        .iter()
+        .zip(specs)
+        .zip(rules)
+    {
+        let offset = u64::from_le_bytes(record[24..32].try_into().map_err(|_| InvalidDirectory)?);
+        let length = u64::from_le_bytes(record[32..40].try_into().map_err(|_| InvalidDirectory)?);
+        let start = usize::try_from(offset).map_err(|_| InvalidDirectory)?;
+        let end = start
+            .checked_add(usize::try_from(length).map_err(|_| InvalidDirectory)?)
+            .ok_or(InvalidDirectory)?;
+        let payload = data.get(start..end).ok_or(InvalidDirectory)?;
+        let valid = match (spec.dtype, rule) {
+            (Dtype::I8, ValueRule::AnyI8) => true,
+            (Dtype::F16, ValueRule::FiniteNormalOrZero) => payload
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .all(|b| valid_float(u32::from(u16::from_le_bytes(*b)), 10, 5, false)),
+            (Dtype::F16, ValueRule::PositiveNormal) => payload
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .all(|b| valid_float(u32::from(u16::from_le_bytes(*b)), 10, 5, true)),
+            (Dtype::F32, ValueRule::FiniteNormalOrZero) => payload
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|b| valid_float(u32::from_le_bytes(*b), 23, 8, false)),
+            (Dtype::F32, ValueRule::PositiveNormal) => payload
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|b| valid_float(u32::from_le_bytes(*b), 23, 8, true)),
+            _ => false,
+        };
+        if !valid {
+            return Err(InvalidDirectory);
+        }
+    }
+    Ok(())
+}
+
+fn valid_float(bits: u32, mantissa_bits: u32, exponent_bits: u32, positive: bool) -> bool {
+    let exponent_mask = (1_u32 << exponent_bits) - 1;
+    let exponent = (bits >> mantissa_bits) & exponent_mask;
+    let mantissa = bits & ((1_u32 << mantissa_bits) - 1);
+    let sign = bits >> (mantissa_bits + exponent_bits);
+    exponent != exponent_mask
+        && !(exponent == 0 && mantissa != 0)
+        && (!positive || (sign == 0 && exponent != 0))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{check, Dtype, InvalidDirectory, TensorSpec};
+    use super::{check, check_values, Dtype, InvalidDirectory, TensorSpec, ValueRule};
 
     fn entry(id: u32, dtype: u8, rank: u8, dims: [u32; 4], offset: u64, len: u64) -> Vec<u8> {
         let mut b = vec![0; 40];
@@ -206,5 +287,91 @@ mod tests {
         crate::test_support::mutate(&valid(), |input| {
             let _ = check(input, 80, &schema());
         });
+    }
+
+    #[test]
+    fn checks_f32_payload_rules_and_rejects_nonfinite_subnormal_and_bad_scale() {
+        let directory = valid();
+        let mut data = vec![0_u8; 80];
+        for (index, value) in [1.0_f32, 2.0, 3.0, 4.0].iter().enumerate() {
+            data[64 + index * 4..68 + index * 4].copy_from_slice(&value.to_bits().to_le_bytes());
+        }
+        let scales = [ValueRule::AnyI8, ValueRule::PositiveNormal];
+        assert_eq!(check_values(&directory, &data, &schema(), &scales), Ok(()));
+        for bits in [
+            0_u32,
+            (-0.0_f32).to_bits(),
+            (-1.0_f32).to_bits(),
+            f32::INFINITY.to_bits(),
+            f32::NAN.to_bits(),
+            1,
+        ] {
+            let mut bad = data.clone();
+            bad[64..68].copy_from_slice(&bits.to_le_bytes());
+            assert_eq!(
+                check_values(&directory, &bad, &schema(), &scales),
+                Err(InvalidDirectory)
+            );
+        }
+        let mut negative = data.clone();
+        negative[64..68].copy_from_slice(&(-1.0_f32).to_bits().to_le_bytes());
+        assert_eq!(
+            check_values(
+                &directory,
+                &negative,
+                &schema(),
+                &[ValueRule::AnyI8, ValueRule::FiniteNormalOrZero]
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check_values(&directory, &data, &schema(), &[ValueRule::AnyI8]),
+            Err(InvalidDirectory)
+        );
+        assert_eq!(
+            check_values(
+                &directory,
+                &data,
+                &schema(),
+                &[ValueRule::PositiveNormal, ValueRule::PositiveNormal]
+            ),
+            Err(InvalidDirectory)
+        );
+    }
+
+    #[test]
+    fn checks_f16_payloads_without_platform_float_conversion() {
+        let specs = [TensorSpec {
+            id: 1,
+            dtype: Dtype::F16,
+            dims: [2, 0, 0, 0],
+        }];
+        let directory = entry(1, 2, 1, [2, 0, 0, 0], 0, 4);
+        assert_eq!(
+            check_values(
+                &directory,
+                &[0, 0x3c, 0, 0xbc],
+                &specs,
+                &[ValueRule::FiniteNormalOrZero]
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check_values(
+                &directory,
+                &[0, 0x3c, 0, 0xbc],
+                &specs,
+                &[ValueRule::PositiveNormal]
+            ),
+            Err(InvalidDirectory)
+        );
+        for bits in [0x7c00_u16, 0x7e00, 0x0001] {
+            let mut data = [0, 0x3c, 0, 0];
+            data[2..4].copy_from_slice(&bits.to_le_bytes());
+            assert_eq!(
+                check_values(&directory, &data, &specs, &[ValueRule::FiniteNormalOrZero]),
+                Err(InvalidDirectory)
+            );
+        }
     }
 }

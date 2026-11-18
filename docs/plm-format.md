@@ -4,7 +4,7 @@ Status: **incomplete and not an interoperable model format**. The current
 parser checks an authenticated container envelope, with separate draft checks
 for BERT metadata, tensor directories, WordPiece vocabulary and provenance.
 These are not yet integrated into a complete BGE validator, and no model can
-be accepted for inference. Quantization payloads and future decoder
+be accepted for inference. Quantization relationships and future decoder
 architectures remain unspecified. Do not produce or distribute model files
 based on this draft.
 
@@ -63,8 +63,15 @@ dimensions and dtypes must exactly equal the trusted schema. Offsets are
 length; the range must fit the data section and not overlap any other tensor.
 The checker accepts at most 1,024 tensors and rejects duplicates or omissions.
 
-This draft does not define the BGE tensor schema, quantization scale layout,
-or payload validation. A directory passing these checks is not a loadable model.
+The separate payload checker requires a trusted per-tensor rule: any i8,
+finite normal-or-zero f16/f32, or strictly positive normal f16/f32. It reads
+little-endian float bits directly and refuses infinities, NaNs and subnormals;
+the positive rule also refuses signed zero and negative values. A dtype and
+rule mismatch is refused. These checks do not establish scale relationships or
+quantization correctness.
+
+This draft does not define the BGE tensor schema or quantization scale layout.
+A directory or payload passing these checks is not a loadable model.
 
 ## Draft WordPiece vocabulary section
 
