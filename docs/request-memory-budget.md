@@ -36,6 +36,13 @@ storage, rejecting invalid strings or insufficient space. The current tree
 parser and sidecar still allocate decoded strings and responses outside a
 request plan, so these functions do not establish complete accounting.
 
+An experimental JSON arena stores nodes and decoded strings in fixed buffers
+charged to a precomputed plan. It sorts object members in place and rejects
+duplicate decoded keys. The input buffer, recursion stack, output and other
+request state remain separate. It is not yet used by the sidecar; its
+correctness, resource behavior and deadline handling need further review and
+fuzzing before integration.
+
 Before enabling `maxMemoryMb`, test exact-limit and one-byte-over cases,
 overflow and allocation failures, large and malicious JSON, concurrent or
 repeated calls, worker/thread overhead, error paths, cancellation and model

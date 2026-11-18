@@ -5,6 +5,7 @@
 pub mod frame;
 pub mod golden;
 pub mod json;
+pub mod json_arena;
 pub mod math;
 pub mod memory_plan;
 pub mod metadata;

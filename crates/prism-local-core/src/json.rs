@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
-const MAX_DEPTH: usize = 32;
-const MAX_NODES: usize = 16_384;
-const MAX_STRING: usize = 65_536;
+pub(crate) const MAX_DEPTH: usize = 32;
+pub(crate) const MAX_NODES: usize = 16_384;
+pub(crate) const MAX_STRING: usize = 65_536;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Value {

@@ -18,7 +18,7 @@ pub fn input() -> io::Result<Option<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use prism_local_core::{
-        frame, json,
+        frame, json, json_arena,
         memory_plan::{checked_plan, Allocation, RequestBuffers},
         metadata::{self, BertSpec},
         model_checks::{self, TrustedSections},
@@ -33,6 +33,35 @@ mod tests {
     fn synthetic_corpus_reaches_valid_parser_paths() {
         let json = include_bytes!("../corpus/json/valid");
         assert!(json::parse(json).is_ok());
+        let arena_input = include_bytes!("../corpus/json_arena/valid");
+        let plan = checked_plan(
+            4,
+            0,
+            &[Allocation {
+                count: 4 * 1024 * 1024,
+                element_bytes: 1,
+            }],
+        )
+        .unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        let arena = json_arena::parse(arena_input, &mut buffers).unwrap();
+        let id = arena.get(arena.root(), "id").unwrap();
+        assert_eq!(arena.string(id), Some("😀"));
+        let duplicate = include_bytes!("../corpus/json_arena/duplicate");
+        let plan = checked_plan(
+            4,
+            0,
+            &[Allocation {
+                count: 4 * 1024 * 1024,
+                element_bytes: 1,
+            }],
+        )
+        .unwrap();
+        let mut buffers = RequestBuffers::new(plan);
+        assert!(matches!(
+            json_arena::parse(duplicate, &mut buffers),
+            Err(json_arena::Error::Invalid)
+        ));
         let input = include_bytes!("../corpus/json_write/valid");
         let value = std::str::from_utf8(input).unwrap();
         let length = json::string_output_len(value).unwrap();

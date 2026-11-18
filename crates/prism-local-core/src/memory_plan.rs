@@ -84,6 +84,7 @@ mod sealed {
     impl Sealed for u8 {}
     impl Sealed for i8 {}
     impl Sealed for u16 {}
+    impl Sealed for u64 {}
     impl Sealed for i32 {}
     impl Sealed for i64 {}
     impl Sealed for f32 {}
@@ -94,6 +95,7 @@ pub trait Element: sealed::Sealed + Copy + Default {}
 impl Element for u8 {}
 impl Element for i8 {}
 impl Element for u16 {}
+impl Element for u64 {}
 impl Element for i32 {}
 impl Element for i64 {}
 impl Element for f32 {}
