@@ -38,14 +38,20 @@ jobs:
         run: cargo build --workspace --all-targets --locked --offline
       - name: Test
         run: cargo test --workspace --locked --offline
+      - name: Test optimized build
+        run: cargo test --workspace --release --locked --offline
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked --offline -- -D warnings
-      - name: Produce foundation fixture bytes
-        run: cargo run --locked --offline -p prism-local-core --bin foundation-golden -- foundation-golden.bin
+      - name: Produce debug fixture bytes
+        run: cargo run --locked --offline -p prism-local-core --bin foundation-golden -- foundation-debug.bin
+      - name: Produce release fixture bytes
+        run: cargo run --release --locked --offline -p prism-local-core --bin foundation-golden -- foundation-release.bin
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: foundation-${{ runner.os }}
-          path: foundation-golden.bin
+          path: |
+            foundation-debug.bin
+            foundation-release.bin
           if-no-files-found: error
           retention-days: 7
 
@@ -58,4 +64,8 @@ jobs:
           pattern: foundation-*
           path: fixtures
       - name: Compare Windows and Linux bytes
-        run: cmp fixtures/foundation-Windows/foundation-golden.bin fixtures/foundation-Linux/foundation-golden.bin
+        run: |
+          cmp fixtures/foundation-Windows/foundation-debug.bin fixtures/foundation-Linux/foundation-debug.bin
+          cmp fixtures/foundation-Windows/foundation-release.bin fixtures/foundation-Linux/foundation-release.bin
+          cmp fixtures/foundation-Windows/foundation-debug.bin fixtures/foundation-Windows/foundation-release.bin
+          cmp fixtures/foundation-Linux/foundation-debug.bin fixtures/foundation-Linux/foundation-release.bin
