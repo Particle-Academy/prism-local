@@ -7,6 +7,7 @@ pub mod golden;
 pub mod json;
 pub mod math;
 pub mod plm;
+pub mod provenance;
 pub mod sha256;
 pub mod tensors;
 pub mod vocab;

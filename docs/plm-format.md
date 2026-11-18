@@ -67,3 +67,18 @@ most 1,024 bytes. The section is limited to 16 MiB and 131,072 entries.
 The checker does not implement or validate the behavior of normalization or
 WordPiece tokenization, and no BGE vocabulary schema is registered yet. A
 passing vocabulary section does not make a model valid or loadable.
+
+## Draft provenance section
+
+The section starts with a u32 source count (1–64). Six nonempty UTF-8 strings
+follow, each prefixed by a little-endian u16 byte length: repository, immutable
+revision, publisher, converter version, complete license text and copyright
+line. Each source then has a similarly encoded name followed by 32 SHA-256
+bytes. Sources must be sorted by unique name and the section must end exactly
+after the final digest; the total section cap is 1 MiB.
+
+The checker compares each value to a separately trusted manifest, including
+the exact license and copyright line, and requires the license text to contain
+that line. A matching provenance section does not verify the source files or
+the origin of the trusted manifest. Conversion must separately verify source
+bytes, license evidence and metadata/NOTICE requirements.
