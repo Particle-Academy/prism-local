@@ -1,10 +1,12 @@
 # PLM1 container draft
 
 Status: **incomplete and not an interoperable model format**. The current
-parser checks only the authenticated container envelope. It does not accept a
-model for inference. Tensor schemas, architecture metadata, tokenizer,
-provenance contents and future decoder architectures are not yet specified or
-validated. Do not produce or distribute model files based on this draft.
+parser checks an authenticated container envelope, with separate draft checks
+for BERT metadata, tensor directories, WordPiece vocabulary and provenance.
+These are not yet integrated into a complete BGE validator, and no model can
+be accepted for inference. Quantization payloads and future decoder
+architectures remain unspecified. Do not produce or distribute model files
+based on this draft.
 
 All integers are unsigned little-endian. A consumer obtains an expected SHA-256
 from a trusted pin and hashes the exact immutable byte buffer it will inspect.
@@ -36,6 +38,17 @@ and uses checked arithmetic and checked integer conversions. Structural success
 is not validation of any section. Until each section and its relationships are
 validated, no caller may load or use weights, token IDs, metadata or template
 content for inference. The format may change while those rules are developed.
+
+## Draft BERT architecture metadata
+
+The BERT architecture section is exactly 64 bytes: eight u32 values in
+order for layer count, hidden size, attention-head count, intermediate size,
+vocabulary size, maximum positions, token-type count and the IEEE-754 f32
+bits for layer-norm epsilon; all remaining bytes are zero. Values must exactly
+match a separately trusted schema, fit hard limits, have hidden size divisible
+by nonzero head count, and have a positive normal finite epsilon no larger
+than one. Other architectures require their own metadata specification.
+Metadata acceptance alone does not validate the model or its weight layout.
 
 ## Draft tensor directory
 

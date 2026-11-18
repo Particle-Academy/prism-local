@@ -6,6 +6,7 @@ pub mod frame;
 pub mod golden;
 pub mod json;
 pub mod math;
+pub mod metadata;
 pub mod plm;
 pub mod provenance;
 pub mod sha256;
