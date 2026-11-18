@@ -20,16 +20,18 @@ fn main() -> io::Result<()> {
     loop {
         let mut active_deadline = None;
         let plan = checked_plan(
-            1,
+            4,
             0,
             &[Allocation {
-                count: u64::try_from(HARD_MAX_FRAME)
-                    .map_err(|_| io::Error::other("invalid frame cap"))?,
+                count: 4 * 1024 * 1024,
                 element_bytes: 1,
             }],
         )
-        .map_err(|_| io::Error::other("invalid frame budget"))?;
-        let mut buffers = RequestBuffers::new(plan);
+        .map_err(|_| io::Error::other("invalid request payload budget"))?;
+        let mut request_buffers = RequestBuffers::new(plan);
+        let mut buffers = request_buffers
+            .split(1024 * 1024)
+            .map_err(|_| io::Error::other("invalid frame budget"))?;
         let frame = read_frame_budgeted(
             &mut input,
             HARD_MAX_FRAME,
@@ -42,16 +44,9 @@ fn main() -> io::Result<()> {
         let Some(frame) = frame else { break };
         let expires = active_deadline.ok_or_else(|| io::Error::other("deadline was not armed"))?;
         refuse_expired(expires);
-        let arena_plan = checked_plan(
-            2,
-            0,
-            &[Allocation {
-                count: 2 * 1024 * 1024,
-                element_bytes: 1,
-            }],
-        )
-        .map_err(|_| io::Error::other("invalid JSON arena budget"))?;
-        let mut arena_buffers = RequestBuffers::new(arena_plan);
+        let mut arena_buffers = request_buffers
+            .split(2 * 1024 * 1024)
+            .map_err(|_| io::Error::other("invalid JSON arena budget"))?;
         let (response, stop) = server.handle_budgeted(frame.as_slice(), &mut arena_buffers);
         refuse_expired(expires);
         if let Some(response) = response {

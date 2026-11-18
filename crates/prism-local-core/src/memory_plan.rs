@@ -136,6 +136,18 @@ impl RequestBuffers {
         self.remaining_bytes
     }
 
+    /// Reserve a disjoint portion of this plan for another allocation scope.
+    /// The reservation is never returned, even if the child is dropped.
+    pub fn split(&mut self, bytes: u64) -> Result<Self, Error> {
+        if bytes > self.remaining_bytes {
+            return Err(Error::ExceedsBudget);
+        }
+        self.remaining_bytes -= bytes;
+        Ok(Self {
+            remaining_bytes: bytes,
+        })
+    }
+
     pub fn allocate<T: Element>(&mut self, count: u64) -> Result<Buffer<T>, Error> {
         let size = u64::try_from(std::mem::size_of::<T>()).map_err(|_| Error::Overflow)?;
         let requested = count.checked_mul(size).ok_or(Error::Overflow)?;
@@ -287,5 +299,29 @@ mod tests {
             allocator.allocate::<u8>(after + 1),
             Err(Error::ExceedsBudget)
         ));
+    }
+
+    #[test]
+    fn child_scopes_cannot_oversubscribe_or_refund_the_parent() {
+        let plan = checked_plan(
+            1,
+            0,
+            &[Allocation {
+                count: 1_024,
+                element_bytes: 1,
+            }],
+        )
+        .unwrap();
+        let mut parent = RequestBuffers::new(plan);
+        {
+            let mut frame = parent.split(256).unwrap();
+            let _arena = parent.split(512).unwrap();
+            assert_eq!(parent.remaining_bytes(), 256);
+            assert!(matches!(parent.split(257), Err(Error::ExceedsBudget)));
+            assert_eq!(parent.remaining_bytes(), 256);
+            let buffer = frame.allocate::<u8>(32).unwrap();
+            assert_eq!(buffer.as_slice().len(), 32);
+        }
+        assert_eq!(parent.remaining_bytes(), 256);
     }
 }

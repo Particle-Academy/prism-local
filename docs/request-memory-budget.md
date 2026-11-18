@@ -23,8 +23,10 @@ request without truncation. Response formatting and copies are not tracked:
 they must be converted to accounted storage or otherwise bounded with evidence
 before enabling the cap.
 
-The runtime must enforce one in-flight request and prevent independent budget
-objects from oversubscribing the same limit. Allocation and worker failures
+The runtime handles one request at a time and partitions a single 4 MiB plan
+for frame and parser buffers, but response allocation is not connected to it.
+Any future negotiated limit must also prevent independent budget objects from
+oversubscribing that limit. Allocation and worker failures
 must not leave charged resources reachable as a successful result. Model loads,
 all compute paths, error responses and cancellation need the same accounting;
 a successfully allocated output buffer alone is insufficient. The parent must
