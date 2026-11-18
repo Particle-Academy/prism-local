@@ -57,18 +57,30 @@ pub fn check_envelope<'a>(
     bytes: &'a [u8],
     expected: &[u8; 32],
 ) -> Result<StructuralEnvelope<'a>, Error> {
+    check_envelope_for_arch(bytes, expected, 1)
+}
+
+/// Check the generic envelope against an architecture ID chosen by trusted
+/// code, not from the file. A match does not implement that architecture or
+/// validate any of its sections. Zero is reserved and always refused.
+pub fn check_envelope_for_arch<'a>(
+    bytes: &'a [u8],
+    expected: &[u8; 32],
+    trusted_architecture: u16,
+) -> Result<StructuralEnvelope<'a>, Error> {
     if sha256::digest(bytes).as_ref() != Some(expected) {
         return Err(Error::DigestMismatch);
     }
-    let ranges = validate(bytes).ok_or(Error::InvalidEnvelope)?;
+    let ranges = validate(bytes, trusted_architecture).ok_or(Error::InvalidEnvelope)?;
     Ok(StructuralEnvelope { bytes, ranges })
 }
 
-fn validate(bytes: &[u8]) -> Option<[(usize, usize); SECTIONS]> {
+fn validate(bytes: &[u8], trusted_architecture: u16) -> Option<[(usize, usize); SECTIONS]> {
     let header = bytes.get(..HEADER_LEN)?;
-    if header.get(..4)? != b"PLM1"
+    if trusted_architecture == 0
+        || header.get(..4)? != b"PLM1"
         || read_u16(header, 4)? != 1
-        || read_u16(header, 6)? != 1
+        || read_u16(header, 6)? != trusted_architecture
         || usize::try_from(read_u64(header, 8)?).ok()? != bytes.len()
         || read_u32(header, 24)? != SECTIONS as u32
         || header.get(28..)?.iter().any(|&b| b != 0)
@@ -153,7 +165,9 @@ fn read_u64(bytes: &[u8], pos: usize) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_envelope, sha256, Error, Section, StructuralEnvelope};
+    use super::{
+        check_envelope, check_envelope_for_arch, sha256, Error, Section, StructuralEnvelope,
+    };
 
     fn put16(b: &mut [u8], pos: usize, n: u16) {
         b[pos..pos + 2].copy_from_slice(&n.to_le_bytes());
@@ -192,6 +206,30 @@ mod tests {
         b[256] ^= 1;
         assert_eq!(check_envelope(&b, &digest), Err(Error::DigestMismatch));
         assert!(check(&b).is_ok()); // content is not yet checked
+    }
+
+    #[test]
+    fn generic_envelope_requires_an_explicit_trusted_nonzero_architecture() {
+        let mut b = valid();
+        put16(&mut b, 6, 42); // Synthetic future architecture, with no model implementation.
+        let digest = sha256::digest(&b).unwrap();
+        assert!(check_envelope_for_arch(&b, &digest, 42).is_ok());
+        assert_eq!(
+            check_envelope_for_arch(&b, &digest, 41),
+            Err(Error::InvalidEnvelope)
+        );
+        assert_eq!(check_envelope(&b, &digest), Err(Error::InvalidEnvelope));
+        put16(&mut b, 6, 0);
+        let digest = sha256::digest(&b).unwrap();
+        assert_eq!(
+            check_envelope_for_arch(&b, &digest, 0),
+            Err(Error::InvalidEnvelope)
+        );
+        b[256] ^= 1;
+        assert_eq!(
+            check_envelope_for_arch(&b, &digest, 42),
+            Err(Error::DigestMismatch)
+        );
     }
 
     #[test]

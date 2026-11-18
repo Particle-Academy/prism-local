@@ -13,6 +13,8 @@ those smoke checks do not measure coverage or demonstrate a fuzzing plateau.
 `corpus/<target>/valid` contains synthetic seeds for each current target. A
 workspace test checks that each seed reaches its target's successful parser
 path; these are examples, not real model files or a complete fuzz corpus.
+The PLM corpus also has a synthetic architecture-42 envelope to exercise the
+generic structural parser; it does not represent a supported model.
 The PLM, frame and tensor corpora also include synthetic hostile headers;
 tests confirm they are rejected, while a mutator can explore nearby cases.
 Use a separate writable working corpus when fuzzing and retain crashing inputs

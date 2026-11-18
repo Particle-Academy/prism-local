@@ -21,10 +21,12 @@ the entire file in one buffer; memory-mapped files or streaming must not be
 introduced without a separate same-bytes and resource-cap analysis.
 
 The fixed 64-byte header is: magic `PLM1` at 0, u16 format version `1` at 4,
-u16 architecture `1` (BGE encoder) at 6, u64 exact file length at 8, u64
+a nonzero u16 architecture identifier at 6, u64 exact file length at 8, u64
 section-table offset at 16, u32 section count at 24, and zero bytes at 28–63.
-Other architecture identifiers are reserved and refused until specified. A
-future architecture can define recurrent layer weights and state requirements
+The generic envelope checker requires an exact architecture identifier from
+trusted code; the existing BGE section checks use `1`. Other identifiers are
+not registered for model use. Matching an identifier proves no architecture
+semantics and cannot authorize a model. A future architecture can define recurrent layer weights and state requirements
 without treating them as BGE tensors. Runtime state is not persisted in a
 weight file by this envelope definition; this does not constrain its future
 representation.

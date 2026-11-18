@@ -213,6 +213,10 @@ mod tests {
         .is_ok());
         let bytes = include_bytes!("../corpus/plm/valid");
         assert!(plm::check_envelope(bytes, &sha256::digest(bytes).unwrap()).is_ok());
+        let bytes = include_bytes!("../corpus/plm/valid-generic-architecture");
+        let digest = sha256::digest(bytes).unwrap();
+        assert!(plm::check_envelope_for_arch(bytes, &digest, 42).is_ok());
+        assert!(plm::check_envelope(bytes, &digest).is_err());
         let small_meta = BertSpec {
             layers: 1,
             hidden: 2,
