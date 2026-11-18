@@ -29,24 +29,36 @@ pub enum RowDotError {
 /// worker cap. It allocates an output vector without request budgeting and is
 /// not an inference or resource-enforcement interface.
 pub fn dot_rows_i8(matrix: &[i8], input: &[i8], threads: usize) -> Result<Vec<i64>, RowDotError> {
-    let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    if threads == 0 || threads > cores {
-        return Err(RowDotError::InvalidThreads);
-    }
-    if input.is_empty() || matrix.is_empty() || !matrix.len().is_multiple_of(input.len()) {
-        return Err(RowDotError::InvalidShape);
-    }
-    let rows = matrix.len() / input.len();
-    let workers = threads.min(rows);
-    let rows_per_worker = rows.div_ceil(workers);
-    let bytes_per_worker = rows_per_worker
-        .checked_mul(input.len())
-        .ok_or(RowDotError::Overflow)?;
+    let rows = checked_row_count(matrix, input, threads)?;
     let mut output = Vec::new();
     output
         .try_reserve_exact(rows)
         .map_err(|_| RowDotError::Allocation)?;
     output.resize(rows, 0);
+    dot_rows_into_i8(matrix, input, &mut output, threads)?;
+    Ok(output)
+}
+
+/// Write fixed-order row dots into caller-owned storage.
+///
+/// Output length must equal the row count. On any worker error, output may be
+/// partially modified and must be discarded. Worker handles, stacks and any
+/// input allocations are not covered by this function's accounting.
+pub fn dot_rows_into_i8(
+    matrix: &[i8],
+    input: &[i8],
+    output: &mut [i64],
+    threads: usize,
+) -> Result<(), RowDotError> {
+    let rows = checked_row_count(matrix, input, threads)?;
+    if output.len() != rows {
+        return Err(RowDotError::InvalidShape);
+    }
+    let workers = threads.min(rows);
+    let rows_per_worker = rows.div_ceil(workers);
+    let bytes_per_worker = rows_per_worker
+        .checked_mul(input.len())
+        .ok_or(RowDotError::Overflow)?;
     std::thread::scope(|scope| {
         let mut handles = Vec::new();
         handles
@@ -78,8 +90,18 @@ pub fn dot_rows_i8(matrix: &[i8], input: &[i8], threads: usize) -> Result<Vec<i6
             }
         }
         error.map_or(Ok(()), Err)
-    })?;
-    Ok(output)
+    })
+}
+
+fn checked_row_count(matrix: &[i8], input: &[i8], threads: usize) -> Result<usize, RowDotError> {
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    if threads == 0 || threads > cores {
+        return Err(RowDotError::InvalidThreads);
+    }
+    if input.is_empty() || matrix.is_empty() || !matrix.len().is_multiple_of(input.len()) {
+        return Err(RowDotError::InvalidShape);
+    }
+    Ok(matrix.len() / input.len())
 }
 
 /// Scalar approximation for finite, normal inputs in [-80, 80], plus zero.
@@ -159,7 +181,7 @@ fn supported(x: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{dot_i8, dot_rows_i8, erf_f32, exp_f32, tanh_f32, RowDotError};
+    use super::{dot_i8, dot_rows_i8, dot_rows_into_i8, erf_f32, exp_f32, tanh_f32, RowDotError};
 
     #[test]
     fn signed_extremes_and_empty_vectors() {
@@ -189,6 +211,28 @@ mod tests {
         for workers in 1..=cores.min(6) {
             assert_eq!(dot_rows_i8(&matrix, &input, workers), Ok(expected.clone()));
         }
+        let plan = crate::memory_plan::checked_plan(
+            1,
+            0,
+            &[crate::memory_plan::Allocation {
+                count: 1024,
+                element_bytes: 1,
+            }],
+        )
+        .unwrap();
+        let mut buffers = crate::memory_plan::RequestBuffers::new(plan);
+        let mut output = buffers.allocate::<i64>(6).unwrap();
+        assert_eq!(
+            dot_rows_into_i8(&matrix, &input, output.as_mut_slice(), cores.min(6)),
+            Ok(())
+        );
+        assert_eq!(output.as_slice(), expected);
+        let mut wrong_size = [99_i64; 5];
+        assert_eq!(
+            dot_rows_into_i8(&matrix, &input, &mut wrong_size, 1),
+            Err(RowDotError::InvalidShape)
+        );
+        assert_eq!(wrong_size, [99_i64; 5]);
         let long_input = vec![-128_i8; 200_000];
         let long_matrix = vec![-128_i8; 400_000];
         for workers in 1..=cores.min(2) {

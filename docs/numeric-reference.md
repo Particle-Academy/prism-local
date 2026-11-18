@@ -46,3 +46,6 @@ and with up to six workers, capped by the runner's available parallelism. Each
 row is accumulated in a single fixed sequence; worker results are compared and
 included in the cross-OS fixture. A one-core runner exercises only one worker.
 This tests the experimental row primitive, not an inference scheduler or model.
+The primitive can also write to a caller-provided fixed-size buffer. A local
+test uses a preplanned buffer for its output, but input storage, worker handles
+and thread stacks remain outside that buffer's accounting.
