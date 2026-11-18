@@ -21,17 +21,45 @@ process with status 124; the parent must restart it and enforce its own
 deadline when accepting responses. Bytes already written cannot be retracted,
 and OS scheduling can delay termination beyond the nominal limit.
 
+The process must establish its hard memory limit before reading stdin. Launch
+with `--max-memory-mb N` to choose the maximum managed payload budget, or omit
+it for 1,024 MiB. The minimum is 4 MiB. The initial hard limit is that budget
+plus 256 MiB fixed headroom; resident model and compute-buffer allowances are
+zero because this skeleton has neither. A future model implementation must
+include their checked sizes before any model load. The configured limit is
+reported on stderr at startup, and in `hello` and `stats` as
+`processMemoryLimitMb` and `processMemoryScope=platformHardLimit`. The latter
+field identifies an OS-enforced limit, not a common RSS measurement.
+
+On x86-64 Windows the sidecar assigns itself to a Job Object with
+`JOB_OBJECT_LIMIT_PROCESS_MEMORY`, limiting per-process committed memory.
+On x86-64 Linux it uses `RLIMIT_AS`, limiting virtual address space including
+file mappings. `RLIMIT_AS` covers more allocation paths than `RLIMIT_DATA`;
+before mmap-based weight loading is added, its virtual mapping cost must be
+included in the model allowance and tested. Existing stricter limits are never
+relaxed. If a limit cannot be installed, configuration overflows, or the
+system allocator refuses an allocation, the process exits with status 125.
+Allocation failure has several possible causes, so 125 means memory limit or
+memory unavailable, not proof the configured cap was reached. A future client
+must surface it as a typed memory-unavailable error; clients do not exist yet.
+Other OS faults (for example Linux stack-growth failure) are not guaranteed to
+produce 125 and must be treated as abnormal termination. Parent-side resource
+limits remain useful defence in depth, especially during startup and against
+faults outside the Rust allocator.
+
 The current skeleton starts no compute workers and loads no model.
 `maxMemoryMb` limits **managed payload capacity**, measured in MiB
-(1,048,576 bytes), and defaults to 1,024 MiB. The minimum accepted value is
-4 MiB, the fixed bootstrap and current request reservation. Values that cannot
-be represented safely are refused. `hello` and `stats` report the setting and
+(1,048,576 bytes), and defaults to the startup budget. The minimum accepted
+value is 4 MiB, the fixed bootstrap and current request reservation. `hello`
+may select a smaller value but cannot raise the startup budget; the hard limit
+continues to reflect the startup budget. Values that cannot be represented
+safely are refused. `hello` and `stats` report the setting and
 `"memoryScope":"managedPayload"`. The managed payload covers the frame, JSON
 arena and response buffers; they are planned together before each request.
 It is not an operating-system RSS limit and excludes allocator bookkeeping,
 transient allocator over-allocation, standard I/O and runtime/OS memory,
-watchdog and parser stacks, and other non-payload overhead. A caller needing an
-RSS limit must enforce it independently. Future model memory and compute
+watchdog and parser stacks, and other non-payload overhead. Neither platform's
+hard limit is an RSS limit. Future model memory and compute
 workspaces must be included in the same plan before model methods are enabled.
 Parsing has separate fixed frame, nesting, node and string limits, and no
 request is silently truncated.

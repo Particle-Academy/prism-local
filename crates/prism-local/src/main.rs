@@ -1,6 +1,8 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod deadline;
+#[allow(unsafe_code)]
+mod process_cap;
 mod rpc;
 mod rpc_response;
 
@@ -11,12 +13,31 @@ use prism_local_core::{
 use std::io::{self, Write};
 use std::time::Instant;
 
+#[global_allocator]
+static ALLOCATOR: process_cap::ExitOnAllocationFailure = process_cap::ExitOnAllocationFailure;
+
 fn main() -> io::Result<()> {
+    let Some(payload_mib) = startup_budget() else {
+        eprintln!("invalid process memory configuration");
+        std::process::exit(process_cap::MEMORY_EXIT);
+    };
+    let Some(limit) = process_cap::limit_bytes(payload_mib) else {
+        eprintln!("invalid process memory configuration");
+        std::process::exit(process_cap::MEMORY_EXIT);
+    };
+    let Ok(_process_cap) = process_cap::install(limit) else {
+        eprintln!("process memory limit unavailable");
+        std::process::exit(process_cap::MEMORY_EXIT);
+    };
+    eprintln!(
+        "processMemoryLimitMb={} memoryScope=platformHardLimit",
+        limit / (1024 * 1024)
+    );
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut input = stdin.lock();
     let mut output = stdout.lock();
-    let mut server = rpc::Server::new();
+    let mut server = rpc::Server::with_startup_budget(payload_mib);
     let watchdog = deadline::Watchdog::new()?;
     loop {
         let mut active_deadline = None;
@@ -66,6 +87,30 @@ fn main() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn startup_budget() -> Option<u64> {
+    let mut args = std::env::args_os();
+    args.next()?;
+    let budget = match args.next() {
+        None => rpc::DEFAULT_MEMORY_MB,
+        Some(name) if name == "--max-memory-mb" => {
+            let value = args.next()?;
+            let text = value.to_str()?;
+            if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            text.parse().ok()?
+        }
+        Some(_) => return None,
+    };
+    if args.next().is_some()
+        || budget < rpc::MIN_MEMORY_MB
+        || process_cap::limit_bytes(budget).is_none()
+    {
+        return None;
+    }
+    Some(budget)
 }
 
 fn refuse_expired(deadline: Instant) {

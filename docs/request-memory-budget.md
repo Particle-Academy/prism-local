@@ -3,7 +3,8 @@
 `maxMemoryMb` limits managed payload capacity in MiB, not process RSS. The
 current skeleton uses one precomputed request plan: up to 1 MiB for the frame,
 2 MiB for the JSON arena and 1 MiB for the response. It rejects limits below
-4 MiB or values whose conversion to bytes overflows; the default is 1,024 MiB.
+4 MiB or values above the process startup budget; the default startup budget is
+1,024 MiB. See [the protocol](protocol.md) for the additional process cap.
 The core provides fixed-capacity numeric buffers and frame-length admission.
 
 The managed payload boundary includes these three buffers and charges their
@@ -24,7 +25,7 @@ limit. Allocation and worker failures
 must not leave charged resources reachable as a successful result. Model loads,
 all compute paths, error responses and cancellation need the same accounting;
 a successfully allocated output buffer alone is insufficient. The parent must
-still enforce any desired OS process limit and deadline independently.
+still enforce its own deadline independently.
 
 JSON string escaping calculates its exact output length and writes into fixed
 storage without growth. The shared string decoder can also write to fixed
@@ -43,4 +44,6 @@ and every additional managed payload in the same checked plan. Audit every
 allocation path and test exact-limit and one-byte-over cases, overflow,
 allocation failures, large and malicious JSON, repeated calls, worker/thread
 overhead, error paths, cancellation and model loads on both supported OSes.
-Any desired OS process limit and deadline must be enforced by the parent.
+The operating-system cap is additional to this accounting; its startup
+allowances and mapped-weight behavior must be extended and tested before model
+loading. Parent-imposed limits and deadlines can add defence in depth.

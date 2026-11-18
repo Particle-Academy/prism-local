@@ -32,6 +32,7 @@ pub enum Success {
         threads: usize,
         deadline_ms: usize,
         max_memory_mb: u64,
+        process_memory_limit_mb: u64,
     },
 }
 
@@ -61,9 +62,10 @@ pub fn encode(
                     threads,
                     deadline_ms,
                     max_memory_mb,
+                    process_memory_limit_mb,
                 },
         } => {
-            write!(&mut dynamic_tail, ",\"result\":{{\"threads\":{threads},\"deadlineMs\":{deadline_ms},\"maxMemoryMb\":{max_memory_mb},\"memoryScope\":\"managedPayload\",\"inferenceAvailable\":false}}}}")
+            write!(&mut dynamic_tail, ",\"result\":{{\"threads\":{threads},\"deadlineMs\":{deadline_ms},\"maxMemoryMb\":{max_memory_mb},\"memoryScope\":\"managedPayload\",\"processMemoryLimitMb\":{process_memory_limit_mb},\"processMemoryScope\":\"platformHardLimit\",\"inferenceAvailable\":false}}}}")
                 .map_err(|_| EncodeError)?;
             (id, dynamic_tail.bytes())
         }
@@ -246,6 +248,7 @@ mod tests {
                     threads: usize::MAX,
                     deadline_ms: usize::MAX,
                     max_memory_mb: u64::MAX,
+                    process_memory_limit_mb: u64::MAX,
                 },
             },
             &mut budget,

@@ -4,6 +4,56 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[test]
+fn invalid_startup_limits_fail_closed() {
+    for args in [
+        vec!["--max-memory-mb", "3"],
+        vec!["--max-memory-mb", "18446744073709551615"],
+        vec!["--max-memory-mb"],
+        vec!["--unknown"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_prism-local"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(125));
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn hello_cannot_raise_the_startup_memory_budget() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_prism-local"))
+        .args(["--max-memory-mb", "4"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    write_frame(
+        &mut input,
+        br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"maxMemoryMb":5}}"#,
+        HARD_MAX_FRAME,
+    )
+    .unwrap();
+    write_frame(
+        &mut input,
+        br#"{"jsonrpc":"2.0","id":2,"method":"hello"}"#,
+        HARD_MAX_FRAME,
+    )
+    .unwrap();
+    drop(input);
+    let mut output = child.stdout.take().unwrap();
+    let denied = read_frame(&mut output, HARD_MAX_FRAME).unwrap().unwrap();
+    assert!(std::str::from_utf8(&denied).unwrap().contains("-32602"));
+    let accepted = read_frame(&mut output, HARD_MAX_FRAME).unwrap().unwrap();
+    let accepted = std::str::from_utf8(&accepted).unwrap();
+    assert!(accepted.contains("\"maxMemoryMb\":4"));
+    assert!(accepted.contains("\"processMemoryLimitMb\":260"));
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
 fn sidecar_answers_framed_requests_and_exits_on_shutdown() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_prism-local"))
         .stdin(Stdio::piped())
@@ -40,6 +90,7 @@ fn sidecar_answers_framed_requests_and_exits_on_shutdown() {
 #[test]
 fn frame_limit_accepts_boundary_and_refuses_an_oversized_header() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_prism-local"))
+        .args(["--max-memory-mb", "4"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

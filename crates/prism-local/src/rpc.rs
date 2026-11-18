@@ -8,7 +8,7 @@ use prism_local_core::{
 use std::time::Duration;
 
 const DEFAULT_DEADLINE_MS: usize = 30_000;
-const DEFAULT_MEMORY_MB: u64 = 1024;
+pub const DEFAULT_MEMORY_MB: u64 = 1024;
 pub const FRAME_PAYLOAD_BYTES: u64 = 1024 * 1024;
 pub const ARENA_PAYLOAD_BYTES: u64 = 2 * 1024 * 1024;
 pub const RESPONSE_PAYLOAD_BYTES: u64 = 1024 * 1024;
@@ -18,9 +18,9 @@ pub const MIN_MEMORY_MB: u64 = 4;
 const _: () = assert!(REQUEST_PAYLOAD_BYTES == MIN_MEMORY_MB * 1024 * 1024);
 const _: () = assert!(FRAME_PAYLOAD_BYTES == prism_local_core::frame::HARD_MAX_FRAME as u64);
 
-#[derive(Default)]
 pub struct Server {
     settings: Option<Settings>,
+    startup_budget: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -28,11 +28,20 @@ struct Settings {
     threads: usize,
     deadline_ms: usize,
     max_memory_mb: u64,
+    process_memory_limit_mb: u64,
 }
 
 impl Server {
+    #[cfg(test)]
     pub fn new() -> Self {
-        Self::default()
+        Self::with_startup_budget(DEFAULT_MEMORY_MB)
+    }
+
+    pub fn with_startup_budget(startup_budget: u64) -> Self {
+        Self {
+            settings: None,
+            startup_budget,
+        }
     }
 
     #[cfg(test)]
@@ -175,7 +184,7 @@ impl Server {
         let cores = std::thread::available_parallelism().map_or(1, usize::from);
         let threads = option_positive(arena, params, "threads", 1)?;
         let deadline_ms = option_positive(arena, params, "deadlineMs", DEFAULT_DEADLINE_MS)?;
-        let max_memory_mb = option_positive_u64(arena, params, "maxMemoryMb", DEFAULT_MEMORY_MB)?;
+        let max_memory_mb = option_positive_u64(arena, params, "maxMemoryMb", self.startup_budget)?;
         let mut child = params.and_then(|index| arena.first_child(index));
         while let Some(index) = child {
             if !matches!(
@@ -189,6 +198,7 @@ impl Server {
         if threads > cores
             || !(100..=300_000).contains(&deadline_ms)
             || max_memory_mb < MIN_MEMORY_MB
+            || max_memory_mb > self.startup_budget
             || checked_plan(
                 max_memory_mb,
                 0,
@@ -205,6 +215,7 @@ impl Server {
             threads,
             deadline_ms,
             max_memory_mb,
+            process_memory_limit_mb: self.startup_budget + crate::process_cap::HEADROOM_MIB,
         })
     }
 }
@@ -248,6 +259,7 @@ impl Settings {
             threads: self.threads,
             deadline_ms: self.deadline_ms,
             max_memory_mb: self.max_memory_mb,
+            process_memory_limit_mb: self.process_memory_limit_mb,
         }
     }
 }
@@ -387,7 +399,7 @@ mod tests {
 
     #[test]
     fn memory_budget_is_explicit_and_enforces_the_bootstrap_minimum() {
-        let mut server = Server::new();
+        let mut server = Server::with_startup_budget(4);
         assert_eq!(server.payload_memory_mib(), 4);
         let rejected = server
             .handle(br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"maxMemoryMb":3}}"#)
@@ -396,7 +408,7 @@ mod tests {
         let accepted = server.handle(br#"{"jsonrpc":"2.0","id":2,"method":"hello","params":{"threads":1,"deadlineMs":500,"maxMemoryMb":4}}"#).0;
         assert_eq!(
             text(accepted),
-            r#"{"jsonrpc":"2.0","id":2,"result":{"threads":1,"deadlineMs":500,"maxMemoryMb":4,"memoryScope":"managedPayload","inferenceAvailable":false}}"#
+            r#"{"jsonrpc":"2.0","id":2,"result":{"threads":1,"deadlineMs":500,"maxMemoryMb":4,"memoryScope":"managedPayload","processMemoryLimitMb":260,"processMemoryScope":"platformHardLimit","inferenceAvailable":false}}"#
         );
         assert_eq!(server.payload_memory_mib(), 4);
         let stats = text(
@@ -412,14 +424,15 @@ mod tests {
             .0;
         assert!(text(reply).contains("\"maxMemoryMb\":64"));
         assert_eq!(server.payload_memory_mib(), 64);
-        let largest = u64::MAX / (1024 * 1024);
         let mut server = Server::new();
-        let request = format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"hello\",\"params\":{{\"maxMemoryMb\":{largest}}}}}");
-        assert!(text(server.handle(request.as_bytes()).0)
-            .contains(&format!("\"maxMemoryMb\":{largest}")));
-        let mut server = Server::new();
-        let request = format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"hello\",\"params\":{{\"maxMemoryMb\":{}}}}}", largest + 1);
-        assert!(text(server.handle(request.as_bytes()).0).contains("-32602"));
+        assert!(text(
+            server
+                .handle(
+                    br#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"maxMemoryMb":1025}}"#
+                )
+                .0
+        )
+        .contains("-32602"));
     }
 
     #[test]

@@ -10,8 +10,8 @@ $prismRequests = @(
     '{"jsonrpc":"2.0","id":3,"method":"shutdown"}'
 )
 $prismExpected = @(
-    '{"jsonrpc":"2.0","id":1,"result":{"threads":1,"deadlineMs":30000,"maxMemoryMb":4,"memoryScope":"managedPayload","inferenceAvailable":false}}',
-    '{"jsonrpc":"2.0","id":2,"result":{"threads":1,"deadlineMs":30000,"maxMemoryMb":4,"memoryScope":"managedPayload","inferenceAvailable":false}}',
+    '{"jsonrpc":"2.0","id":1,"result":{"threads":1,"deadlineMs":30000,"maxMemoryMb":4,"memoryScope":"managedPayload","processMemoryLimitMb":260,"processMemoryScope":"platformHardLimit","inferenceAvailable":false}}',
+    '{"jsonrpc":"2.0","id":2,"result":{"threads":1,"deadlineMs":30000,"maxMemoryMb":4,"memoryScope":"managedPayload","processMemoryLimitMb":260,"processMemoryScope":"platformHardLimit","inferenceAvailable":false}}',
     '{"jsonrpc":"2.0","id":3,"result":null}'
 )
 
@@ -25,6 +25,8 @@ function Write-PrismFrame([System.IO.Stream]$Stream, [string]$Value) {
 
 $prismStart = [System.Diagnostics.ProcessStartInfo]::new()
 $prismStart.FileName = [System.IO.Path]::GetFullPath($BinaryPath)
+$prismStart.ArgumentList.Add('--max-memory-mb')
+$prismStart.ArgumentList.Add('4')
 $prismStart.UseShellExecute = $false
 $prismStart.CreateNoWindow = $true
 $prismStart.RedirectStandardInput = $true
