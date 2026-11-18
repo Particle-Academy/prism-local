@@ -59,7 +59,9 @@ The verified source snapshot's safetensors header describes 200 tensors: 199
 F32 tensors and one I64 `embeddings.position_ids` buffer with shape `[1, 512]`.
 The buffer contains the integers 0 through 511 in order. The header's ranges
 were checked for contiguous, non-overlapping coverage of the data and lengths
-consistent with the listed shapes. There are also two F32 pooler tensors.
+consistent with the listed shapes. A separate bit-level scan of this snapshot
+found 33,359,549 normal F32 values and 451 zeros, with no nonfinite or subnormal
+values. There are also two F32 pooler tensors.
 The pinned pooling configuration requests CLS-token pooling; the converter
 must explicitly define and validate how the position-ID and pooler tensors
 are handled, based on reference behavior. These observations are not a complete
