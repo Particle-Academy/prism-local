@@ -10,10 +10,13 @@ model_card_sha256 = "ddb964361a55c6e5dfca6361615854b260c9c960205d04c7520151aaa1d
 model_card_git_blob_sha1 = "8b8567d75ffa619486d9590cb0eb76d66ad46c49"
 model_card_license = "mit"
 
-# Source-host metadata only: the actual model bytes are not locally verified.
+# Observed from the explicitly downloaded local snapshot, 2026-11-18. The
+# converter must independently verify the bytes it actually converts.
 weights_path = "model.safetensors"
 weights_sha256_reported = "3c9f31665447c8911517620762200d2245a2518d6e7208acc78cd9db317e21ad"
-weights_locally_verified = false
+weights_sha256_observed = "3c9f31665447c8911517620762200d2245a2518d6e7208acc78cd9db317e21ad"
+weights_size_observed = 133466304
+weights_locally_verified = true
 
 license_url = "https://github.com/FlagOpen/FlagEmbedding/blob/c086741f5e117b7b8ce1745ea00b6c262f281a01/LICENSE"
 license_commit = "c086741f5e117b7b8ce1745ea00b6c262f281a01"

@@ -32,9 +32,10 @@ The proposed BGE source is `BAAI/bge-small-en-v1.5` at revision
 `5c38ec7c405ec4b44b94cc5a9bb96e735b38267a`. At that revision Hugging Face
 reports `model.safetensors` SHA-256
 `3c9f31665447c8911517620762200d2245a2518d6e7208acc78cd9db317e21ad`.
-This is a source-host metadata observation, not a locally verified download or
-an output `.plm` hash. Other inputs, actual file bytes and license evidence
-still need independent verification before conversion.
+An explicit download on 2026-11-18 had 133,466,304 bytes and matched that
+SHA-256. This is an observation of a local source snapshot, not an output
+`.plm` hash or authorization to convert. The converter must independently
+verify the actual bytes and license evidence each time it converts.
 
 The pinned model card declares MIT and links the FlagEmbedding MIT license,
 but the pinned model repository's root listing has no separate LICENSE file.
@@ -50,9 +51,19 @@ conversion must verify all evidence and input bytes again. Do not silently
 treat a license tag as a complete redistribution notice.
 
 The proposed values live in `models/bge-small-en-v1.5.toml`. That file is an
-incomplete evidence manifest: the converter, source-weight verification and
-metadata/NOTICE enforcement do not exist yet and it does not authorize a model
+incomplete evidence manifest: the converter, conversion-time input verification
+and metadata/NOTICE enforcement do not exist yet and it does not authorize a model
 conversion or distribution.
+
+The verified source snapshot's safetensors header describes 200 tensors: 199
+F32 tensors and one I64 `embeddings.position_ids` buffer with shape `[1, 512]`.
+The buffer contains the integers 0 through 511 in order. The header's ranges
+were checked for contiguous, non-overlapping coverage of the data and lengths
+consistent with the listed shapes. There are also two F32 pooler tensors.
+The pinned pooling configuration requests CLS-token pooling; the converter
+must explicitly define and validate how the position-ID and pooler tensors
+are handled, based on reference behavior. These observations are not a complete
+tensor schema, quantization recipe, converter or inference validation.
 
 Evidence: [pinned model card](https://huggingface.co/BAAI/bge-small-en-v1.5/blob/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/README.md),
 [pinned source weights](https://huggingface.co/BAAI/bge-small-en-v1.5/blob/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/model.safetensors),
