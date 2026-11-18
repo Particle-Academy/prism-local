@@ -16,9 +16,9 @@ conversion recipe. Verify these before conversion. Re-check the pinned
 revision's actual license file at conversion where present, accepting only
 MIT or Apache-2.0. For a model whose repository has no license file, conversion
 is refused unless the manifest records all three: (1) the license field from
-the model card at the pinned model revision; (2) the linked license text at a
-commit that existed no later than the model's release, with its Git blob SHA
-and SHA-256; and (3) the exact copyright line from that license in the project
+the model card at the pinned model revision; (2) the linked license text at its
+latest file change no later than model release, pinned to an immutable commit
+with its Git blob SHA and SHA-256; and (3) the exact copyright line in the project
 NOTICE and the converted model's metadata. Model publisher is a separate field.
 The converter must independently verify these records and the bytes at
 conversion, and refuse any missing or mismatched item. Retain the full license
@@ -57,6 +57,9 @@ conversion or distribution.
 Evidence: [pinned model card](https://huggingface.co/BAAI/bge-small-en-v1.5/blob/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/README.md),
 [pinned source weights](https://huggingface.co/BAAI/bge-small-en-v1.5/blob/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/model.safetensors),
 and [pinned upstream license](https://github.com/FlagOpen/FlagEmbedding/blob/c086741f5e117b7b8ce1745ea00b6c262f281a01/LICENSE).
+The [model history](https://huggingface.co/BAAI/bge-small-en-v1.5/commits/main)
+and [license-file history](https://github.com/FlagOpen/FlagEmbedding/commits/master/LICENSE)
+show the dates used above.
 
 Conversion must be deterministic: the same verified inputs, converter and
 recipe produce identical bytes, independently checked in two clean builds.
