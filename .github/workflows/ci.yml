@@ -42,9 +42,17 @@ jobs:
         run: cargo test --workspace --release --locked --offline
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+      - name: Build release sidecar
+        run: cargo build -p prism-local --release --locked --offline
       - name: Compare relocated release builds
         shell: pwsh
         run: ./tools/check-repro.ps1
+      - name: Produce sidecar protocol fixtures
+        shell: pwsh
+        run: |
+          $prismSuffix = if ($IsWindows) { '.exe' } else { '' }
+          ./tools/protocol-golden.ps1 -BinaryPath ("target/debug/prism-local" + $prismSuffix) -OutputPath protocol-debug.bin
+          ./tools/protocol-golden.ps1 -BinaryPath ("target/release/prism-local" + $prismSuffix) -OutputPath protocol-release.bin
       - name: Produce debug fixture bytes
         run: cargo run --locked --offline -p prism-local-core --bin foundation-golden -- foundation-debug.bin
       - name: Produce release fixture bytes
@@ -55,6 +63,8 @@ jobs:
           path: |
             foundation-debug.bin
             foundation-release.bin
+            protocol-debug.bin
+            protocol-release.bin
           if-no-files-found: error
           retention-days: 7
 
@@ -79,10 +89,15 @@ jobs:
           if grep -q '(NEEDED)' target/musl-dynamic.txt; then echo 'Unexpected shared library'; exit 1; fi
       - name: Produce musl fixture bytes
         run: cargo run --target x86_64-unknown-linux-musl --release --locked --offline -p prism-local-core --bin foundation-golden -- foundation-musl.bin
+      - name: Produce musl sidecar protocol fixture
+        shell: pwsh
+        run: ./tools/protocol-golden.ps1 -BinaryPath target/x86_64-unknown-linux-musl/release/prism-local -OutputPath protocol-musl.bin
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: foundation-Musl
-          path: foundation-musl.bin
+          path: |
+            foundation-musl.bin
+            protocol-musl.bin
           if-no-files-found: error
           retention-days: 7
 
@@ -101,3 +116,8 @@ jobs:
           cmp fixtures/foundation-Windows/foundation-debug.bin fixtures/foundation-Windows/foundation-release.bin
           cmp fixtures/foundation-Linux/foundation-debug.bin fixtures/foundation-Linux/foundation-release.bin
           cmp fixtures/foundation-Linux/foundation-release.bin fixtures/foundation-Musl/foundation-musl.bin
+          cmp fixtures/foundation-Windows/protocol-debug.bin fixtures/foundation-Linux/protocol-debug.bin
+          cmp fixtures/foundation-Windows/protocol-release.bin fixtures/foundation-Linux/protocol-release.bin
+          cmp fixtures/foundation-Windows/protocol-debug.bin fixtures/foundation-Windows/protocol-release.bin
+          cmp fixtures/foundation-Linux/protocol-debug.bin fixtures/foundation-Linux/protocol-release.bin
+          cmp fixtures/foundation-Linux/protocol-release.bin fixtures/foundation-Musl/protocol-musl.bin

@@ -50,6 +50,11 @@ RSS limit: allocator overhead, runtime and stack memory are not included.
 See [request memory budgeting](request-memory-budget.md) for the remaining
 accounting and validation work.
 
+CI sends a synthetic `hello`, `stats` and `shutdown` sequence to the debug and
+release sidecars, checks the complete framed responses against fixed expected
+bytes, and compares those bytes across Windows, GNU Linux and static musl
+Linux. This checks the current skeleton only; it is not inference evidence.
+
 CI checks for direct `std::net` references in engine source. This lexical
 check does not prove the absence of all network access: aliases, other platform
 APIs and transitive code still require review. The current workspace has only
