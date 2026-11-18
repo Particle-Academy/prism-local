@@ -286,4 +286,19 @@ mod tests {
         let string = format!("\"{}\"", "a".repeat(65_537));
         assert!(parse(string.as_bytes()).is_err());
     }
+
+    #[test]
+    fn deterministic_arbitrary_bytes_smoke_never_panics() {
+        let mut state = 0xbb67_ae85_u32;
+        for length in 0..512 {
+            let mut input = Vec::with_capacity(length);
+            for _ in 0..length {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                input.push((state >> 24) as u8);
+            }
+            let _ = parse(&input);
+        }
+    }
 }

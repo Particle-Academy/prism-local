@@ -183,4 +183,21 @@ mod tests {
         put16(&mut b, 6, 2);
         assert_eq!(check(&b), Err(Error::InvalidEnvelope));
     }
+
+    #[test]
+    fn deterministic_mutation_smoke_never_panics() {
+        let seed = valid();
+        let mut state = 0x6a09_e667_u32;
+        for _ in 0..4096 {
+            let mut b = seed.clone();
+            for _ in 0..4 {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let index = state as usize % b.len();
+                b[index] ^= (state >> 24) as u8;
+            }
+            let _ = check(&b);
+        }
+    }
 }
