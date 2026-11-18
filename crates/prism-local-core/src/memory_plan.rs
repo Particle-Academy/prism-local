@@ -1,7 +1,8 @@
 //! Checked arithmetic for a future request-allocation plan.
 //!
-//! This does not allocate memory or enforce a process limit. Every allocation
-//! path must be connected and audited before this can support a memory cap.
+//! Optional fixed-capacity payload buffers use a checked plan. This does not
+//! enforce a process limit: every allocation path must be connected and audited
+//! before it can support a request memory cap.
 
 const MIB: u64 = 1024 * 1024;
 
@@ -17,15 +18,28 @@ pub enum Error {
     Invalid,
     Overflow,
     ExceedsBudget,
+    Allocation,
 }
 
 /// A conservative sum of the caller-specified simultaneously live payloads.
 /// It excludes allocator overhead, runtime stacks and unlisted allocations.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Plan {
-    pub resident_bytes: u64,
-    pub request_bytes: u64,
-    pub total_bytes: u64,
+    resident_bytes: u64,
+    request_bytes: u64,
+    total_bytes: u64,
+}
+
+impl Plan {
+    pub fn resident_bytes(&self) -> u64 {
+        self.resident_bytes
+    }
+    pub fn request_bytes(&self) -> u64 {
+        self.request_bytes
+    }
+    pub fn total_bytes(&self) -> u64 {
+        self.total_bytes
+    }
 }
 
 /// Compute the full plan before a request begins, rejecting overflow and excess.
@@ -65,9 +79,86 @@ pub fn checked_plan(
     })
 }
 
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for u8 {}
+    impl Sealed for i8 {}
+    impl Sealed for u16 {}
+    impl Sealed for i32 {}
+    impl Sealed for i64 {}
+    impl Sealed for f32 {}
+}
+
+/// Primitive numeric payload types with allocation-free zero defaults.
+pub trait Element: sealed::Sealed + Copy + Default {}
+impl Element for u8 {}
+impl Element for i8 {}
+impl Element for u16 {}
+impl Element for i32 {}
+impl Element for i64 {}
+impl Element for f32 {}
+
+/// Fixed-size storage: no operation exposes the backing vector or can grow it.
+pub struct Buffer<T: Element> {
+    values: Vec<T>,
+}
+
+impl<T: Element> Buffer<T> {
+    pub fn as_slice(&self) -> &[T] {
+        &self.values
+    }
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.values
+    }
+}
+
+/// Allocates only payload buffers charged against a consumed request plan.
+///
+/// Charges are conservative and never returned, even if a buffer is dropped.
+/// Actual vector capacity is charged; an allocator that gives more capacity
+/// than remains in the plan causes refusal. Allocator overhead, transient
+/// allocation, thread stacks and other allocations are not accounted for.
+/// Multiple allocators have no shared limit, and this is not an RSS limit.
+pub struct RequestBuffers {
+    remaining_bytes: u64,
+}
+
+impl RequestBuffers {
+    pub fn new(plan: Plan) -> Self {
+        Self {
+            remaining_bytes: plan.request_bytes,
+        }
+    }
+
+    pub fn remaining_bytes(&self) -> u64 {
+        self.remaining_bytes
+    }
+
+    pub fn allocate<T: Element>(&mut self, count: u64) -> Result<Buffer<T>, Error> {
+        let size = u64::try_from(std::mem::size_of::<T>()).map_err(|_| Error::Overflow)?;
+        let requested = count.checked_mul(size).ok_or(Error::Overflow)?;
+        if requested > self.remaining_bytes {
+            return Err(Error::ExceedsBudget);
+        }
+        let count = usize::try_from(count).map_err(|_| Error::Overflow)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| Error::Allocation)?;
+        let capacity = u64::try_from(values.capacity()).map_err(|_| Error::Overflow)?;
+        let charged = capacity.checked_mul(size).ok_or(Error::Overflow)?;
+        if charged > self.remaining_bytes {
+            return Err(Error::ExceedsBudget);
+        }
+        values.resize(count, T::default());
+        self.remaining_bytes -= charged;
+        Ok(Buffer { values })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{checked_plan, Allocation, Error, Plan};
+    use super::{checked_plan, Allocation, Error, Plan, RequestBuffers};
 
     #[test]
     fn exact_limit_is_accepted_and_a_single_extra_byte_is_refused() {
@@ -154,5 +245,45 @@ mod tests {
             ),
             Err(Error::Invalid)
         );
+    }
+
+    #[test]
+    fn fixed_buffers_cannot_spend_more_than_the_precomputed_payload_plan() {
+        let request = [Allocation {
+            count: 1024 * 1024,
+            element_bytes: 1,
+        }];
+        let plan = checked_plan(1, 0, &request).unwrap();
+        assert_eq!(plan.resident_bytes(), 0);
+        assert_eq!(plan.request_bytes(), 1024 * 1024);
+        assert_eq!(plan.total_bytes(), 1024 * 1024);
+        let mut allocator = RequestBuffers::new(plan);
+        let mut floats = allocator.allocate::<f32>(4).unwrap();
+        floats.as_mut_slice()[0] = 2.5;
+        assert_eq!(floats.as_slice(), &[2.5, 0.0, 0.0, 0.0]);
+        let before = allocator.remaining_bytes();
+        assert!(matches!(
+            allocator.allocate::<u8>(before + 1),
+            Err(Error::ExceedsBudget)
+        ));
+        assert!(matches!(
+            allocator.allocate::<i64>(u64::MAX),
+            Err(Error::Overflow)
+        ));
+        assert_eq!(allocator.remaining_bytes(), before);
+        let bytes = allocator.allocate::<u8>(8).unwrap();
+        assert_eq!(bytes.as_slice().len(), 8);
+        assert_eq!(
+            allocator.remaining_bytes(),
+            before - bytes.values.capacity() as u64
+        );
+        let after = allocator.remaining_bytes();
+        drop(floats);
+        drop(bytes);
+        assert_eq!(allocator.remaining_bytes(), after);
+        assert!(matches!(
+            allocator.allocate::<u8>(after + 1),
+            Err(Error::ExceedsBudget)
+        ));
     }
 }

@@ -29,10 +29,11 @@ does not by itself provide an operating system RSS limit. Parsing has separate
 fixed frame, nesting, node and string limits, and no request is silently
 truncated.
 
-The core contains checked arithmetic for a future allocation plan. It can
-refuse overflow and sums over a declared budget, but does not allocate, account
-for allocator overhead or stacks, discover unlisted allocations, or enforce a
-limit. It is not connected to the sidecar or evidence that a cap exists.
+The core contains checked allocation planning and fixed-size numeric buffers
+that charge their actual vector capacity against a consumed plan. This does
+not account for allocator overhead, transient allocation, stacks or unlisted
+allocations; separate allocators have no shared limit. It is not connected to
+the sidecar or evidence that a request or process cap exists.
 
 CI checks for direct `std::net` references in engine source. This lexical
 check does not prove the absence of all network access: aliases, other platform
