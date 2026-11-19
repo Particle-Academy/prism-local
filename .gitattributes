@@ -1,0 +1,3 @@
+crates/prism-local-core/tests/fixtures/math-reference.csv text eol=lf
+fuzz/corpus/** -text
+*.sh text eol=lf

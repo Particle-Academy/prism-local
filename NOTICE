@@ -1,0 +1,7 @@
+Planned model support: BAAI/bge-small-en-v1.5 (publisher: BAAI).
+The model card declares MIT and links the FlagEmbedding license:
+Copyright (c) 2022 staoxiao
+
+No model weights or converted model are included in this repository.
+The full upstream license and this copyright notice must accompany any
+converted model, subject to verifying the evidence at conversion.

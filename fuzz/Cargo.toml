@@ -1,0 +1,10 @@
+[package]
+name = "prism-local-fuzz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+prism-local-core = { path = "../crates/prism-local-core" }
+prism-local-convert = { path = "../crates/prism-local-convert" }
