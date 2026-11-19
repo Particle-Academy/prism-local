@@ -1,7 +1,17 @@
 //! Bounded stdin adapter for external fuzzing tools.
 use std::io::{self, Read};
 
+pub mod targets;
+
 const MAX_INPUT: u64 = 1_048_576;
+
+/// Feeds one bounded stdin input to a target.
+pub fn run(target: fn(&[u8])) -> io::Result<()> {
+    if let Some(bytes) = input()? {
+        target(&bytes);
+    }
+    Ok(())
+}
 
 pub fn input() -> io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
@@ -312,6 +322,43 @@ mod tests {
             &[ValueRule::AnyI8, ValueRule::FiniteNormalOrZero]
         )
         .is_err());
+    }
+
+    #[test]
+    fn f16_corpus_reaches_scale_and_payload_rules() {
+        let specs = [
+            TensorSpec {
+                id: 1,
+                dtype: Dtype::I8,
+                dims: [2, 4, 0, 0],
+            },
+            TensorSpec {
+                id: 2,
+                dtype: Dtype::F16,
+                dims: [2, 0, 0, 0],
+            },
+            TensorSpec {
+                id: 3,
+                dtype: Dtype::F16,
+                dims: [4, 0, 0, 0],
+            },
+        ];
+        let rules = [
+            ValueRule::AnyI8,
+            ValueRule::PositiveNormal,
+            ValueRule::FiniteNormalOrZero,
+        ];
+        let scales = [RowScale {
+            weight_id: 1,
+            scale_id: 2,
+        }];
+        assert!(tensors::check_row_scales(&specs, &rules, &scales).is_ok());
+        let check = |bytes: &[u8]| {
+            let (directory, data) = bytes.split_at(120);
+            tensors::check_values_with_scratch(directory, data, &specs, &rules, &mut [0; 6])
+        };
+        assert!(check(include_bytes!("../corpus/tensors_f16/valid")).is_ok());
+        assert!(check(include_bytes!("../corpus/tensors_f16/subnormal-scale")).is_err());
     }
 
     #[test]
